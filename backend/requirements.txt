@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+transformers
+sqlalchemy
+requests
+python-dotenv
+torch
+fpdf2
+pydantic
+twikit>=2.3.3
+undetected-chromedriver>=3.5.5
+selenium>=4.20.0
