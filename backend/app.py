@@ -772,27 +772,45 @@ def gerar_relatorio(
     pdf.ln()
 
     pdf.set_font("Helvetica", "", 8)
-    for i, p in enumerate(posts, 1):
-        # Cor do sentimento
-        if p.sentimento == "positivo":
-            pdf.set_text_color(22, 163, 74)
-        elif p.sentimento == "negativo":
-            pdf.set_text_color(220, 38, 38)
-        elif p.sentimento == "nulo":
-            pdf.set_text_color(148, 163, 184)
-        else:
-            pdf.set_text_color(0, 0, 0)
+    line_height = 4  # altura de cada linha de texto
+    min_row_h = 7    # altura mínima da linha
 
-        texto = (p.texto or "")[:100] + ("..." if p.texto and len(p.texto) > 100 else "")
-        # Sanitizar caracteres que a fonte Helvetica não suporta
+    for i, p in enumerate(posts, 1):
+        texto = (p.texto or "")[:200] + ("..." if p.texto and len(p.texto) > 200 else "")
         texto = texto.encode("latin-1", errors="replace").decode("latin-1")
 
         score_str = f"{p.score:.4f}" if p.score else "-"
         hora_post = p.timestamp_post.strftime("%H:%M") if p.timestamp_post else "-"
 
+        # Calcular quantas linhas o texto precisa para determinar a altura da row
+        text_w = col_widths[1] - 2  # margem interna
+        lines = pdf.multi_cell(text_w, line_height, texto, dry_run=True, output="LINES") if texto else [""]
+        n_lines = max(1, len(lines))
+        row_h = max(min_row_h, n_lines * line_height + 2)
+
+        # Verificar se cabe na página, senão quebra
+        if pdf.get_y() + row_h > pdf.h - 20:
+            pdf.add_page()
+            # Re-desenhar cabeçalho da tabela
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.set_fill_color(15, 23, 42)
+            pdf.set_text_color(255, 255, 255)
+            for w, h in zip(col_widths, headers):
+                pdf.cell(w, 8, h, border=1, fill=True, align="C")
+            pdf.ln()
+            pdf.set_font("Helvetica", "", 8)
+
+        x_start = pdf.get_x()
+        y_start = pdf.get_y()
+
+        # Coluna #
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(col_widths[0], 7, str(i), border=1, align="C")
-        pdf.cell(col_widths[1], 7, texto, border=1)
+        pdf.set_xy(x_start, y_start)
+        pdf.cell(col_widths[0], row_h, str(i), border=1, align="C")
+
+        # Coluna Texto (multi_cell com word wrap)
+        pdf.set_xy(x_start + col_widths[0], y_start)
+        pdf.multi_cell(col_widths[1], line_height, texto, border=1)
 
         # Sentimento com cor
         if p.sentimento == "positivo":
@@ -803,12 +821,17 @@ def gerar_relatorio(
             pdf.set_text_color(148, 163, 184)
         else:
             pdf.set_text_color(100, 100, 0)
-        pdf.cell(col_widths[2], 7, p.sentimento or "-", border=1, align="C")
+        pdf.set_xy(x_start + col_widths[0] + col_widths[1], y_start)
+        pdf.cell(col_widths[2], row_h, p.sentimento or "-", border=1, align="C")
 
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(col_widths[3], 7, score_str, border=1, align="C")
-        pdf.cell(col_widths[4], 7, hora_post, border=1, align="C")
-        pdf.ln()
+        pdf.set_xy(x_start + col_widths[0] + col_widths[1] + col_widths[2], y_start)
+        pdf.cell(col_widths[3], row_h, score_str, border=1, align="C")
+
+        pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
+        pdf.cell(col_widths[4], row_h, hora_post, border=1, align="C")
+
+        pdf.set_y(y_start + row_h)
 
     # Salvar
     nome_arquivo = f"sentcrypto_{moeda.upper()}_{fonte}_{hora_inicio.strftime('%Y%m%d_%Hh')}.pdf"
@@ -822,6 +845,279 @@ def gerar_relatorio(
         "caminho_completo": str(caminho.resolve()),
         "url": f"/relatorios/{nome_arquivo}",
         "total_posts": total,
+    }
+
+
+# ── Relatório PDF de Correlação Sentimento vs Preço ─────────────────────────
+@app.post("/gerar-relatorio-correlacao", tags=["relatorio"])
+def gerar_relatorio_correlacao(
+    moeda: str = Query("BTC"),
+    fonte: str = Query("X"),
+    db: Session = Depends(get_db),
+):
+    """Gera PDF com análise de correlação entre sentimento e preço,
+    incluindo métricas Sentiment Score e Return After Sentiment."""
+
+    # 1. Buscar dados de correlação (reutilizando a mesma lógica)
+    posts = (
+        db.query(SocialPost)
+        .filter(
+            SocialPost.moeda == moeda.upper(),
+            SocialPost.fonte == fonte,
+            SocialPost.sentimento != "nulo",
+        )
+        .order_by(SocialPost.timestamp_post.asc())
+        .all()
+    )
+
+    if not posts:
+        raise HTTPException(status_code=404, detail="Nenhum post encontrado para gerar relatório.")
+
+    # Agrupar por hora
+    agrupado: dict = {}
+    for p in posts:
+        hora = p.timestamp_post.replace(minute=0, second=0, microsecond=0)
+        chave = hora.isoformat()
+        if chave not in agrupado:
+            agrupado[chave] = {"positivos": 0, "negativos": 0, "neutros": 0, "total": 0, "indices": []}
+        agrupado[chave]["total"] += 1
+        agrupado[chave]["indices"].append(sentimento_para_indice(p.sentimento))
+        if p.sentimento == "positivo":
+            agrupado[chave]["positivos"] += 1
+        elif p.sentimento == "negativo":
+            agrupado[chave]["negativos"] += 1
+        else:
+            agrupado[chave]["neutros"] += 1
+
+    # Buscar preços Binance (últimas 72h para ter janelas de 1h, 4h, 24h)
+    symbol = f"{moeda.upper()}USDT"
+    try:
+        klines = fetch_binance_klines(symbol, interval="1h", limit=72)
+    except Exception:
+        klines = []
+
+    precos_por_hora: dict = {}
+    for k in klines:
+        ts = datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc)
+        chave = ts.replace(minute=0, second=0, microsecond=0, tzinfo=None).isoformat()
+        precos_por_hora[chave] = {
+            "abertura": float(k[1]),
+            "fechamento": float(k[4]),
+            "variacao_pct": round(((float(k[4]) - float(k[1])) / float(k[1]) * 100) if float(k[1]) else 0, 4),
+        }
+
+    # Lista ordenada de todas as horas dos klines
+    horas_klines = sorted(precos_por_hora.keys())
+
+    # 2. Calcular métricas por hora
+    pontos = []
+    acertos = 0
+    erros_corr = 0
+    total_comparavel = 0
+    scores_list = []
+
+    for chave, grupo in sorted(agrupado.items()):
+        pos = grupo["positivos"]
+        neg = grupo["negativos"]
+        total = grupo["total"]
+
+        # Métrica 1: Sentiment Score = (Pos - Neg) / Total  →  [-1, +1]
+        sentiment_score = round((pos - neg) / total, 4) if total > 0 else 0
+        scores_list.append(sentiment_score)
+
+        # Direção baseada no Sentiment Score (consistente com a tabela)
+        sentimento_dir = "positivo" if sentiment_score > 0.1 else "negativo" if sentiment_score < -0.1 else "neutro"
+
+        preco_info = precos_por_hora.get(chave, {})
+        variacao_1h = preco_info.get("variacao_pct")
+        preco_abertura = preco_info.get("abertura")
+        preco_fechamento = preco_info.get("fechamento")
+
+        # Métrica 2: Return After Sentiment — janelas 1h, 4h
+        retorno_1h = None
+        retorno_4h = None
+        if chave in horas_klines:
+            idx = horas_klines.index(chave)
+            preco_t = preco_abertura
+
+            if preco_t and idx + 1 < len(horas_klines):
+                preco_1h = precos_por_hora[horas_klines[idx + 1]]["fechamento"]
+                retorno_1h = round((preco_1h - preco_t) / preco_t * 100, 4)
+
+            if preco_t and idx + 4 < len(horas_klines):
+                preco_4h = precos_por_hora[horas_klines[idx + 4]]["fechamento"]
+                retorno_4h = round((preco_4h - preco_t) / preco_t * 100, 4)
+
+        preco_dir = None
+        acertou = None
+        if variacao_1h is not None:
+            preco_dir = "subiu" if variacao_1h > 0.05 else "desceu" if variacao_1h < -0.05 else "estavel"
+            if sentimento_dir != "neutro" and preco_dir != "estavel":
+                total_comparavel += 1
+                if (sentimento_dir == "positivo" and preco_dir == "subiu") or \
+                   (sentimento_dir == "negativo" and preco_dir == "desceu"):
+                    acertos += 1
+                    acertou = True
+                else:
+                    erros_corr += 1
+                    acertou = False
+
+        hora_fmt = chave.split("T")[1][:5] if "T" in chave else chave
+
+        pontos.append({
+            "hora": hora_fmt,
+            "timestamp": chave,
+            "positivos": pos,
+            "negativos": neg,
+            "neutros": grupo["neutros"],
+            "total": total,
+            "sentiment_score": sentiment_score,
+            "sentimento_dir": sentimento_dir,
+            "preco_abertura": preco_abertura,
+            "preco_fechamento": preco_fechamento,
+            "variacao_1h": variacao_1h,
+            "retorno_1h": retorno_1h,
+            "retorno_4h": retorno_4h,
+            "acertou": acertou,
+        })
+
+    taxa_acerto = round(acertos / total_comparavel * 100, 1) if total_comparavel > 0 else None
+    media_score_geral = round(sum(scores_list) / len(scores_list), 4) if scores_list else 0
+
+    # Filtrar horas sem posts relevantes (pos + neg == 0) do PDF
+    pontos_pdf = [p for p in pontos if p["positivos"] + p["negativos"] > 0]
+
+    # ── Montar PDF ──────────────────────────────────────────────────
+    pdf = SentCryptoPDF()
+    agora = datetime.now()
+    pdf._subtitulo = f"{moeda.upper()}/USDT  ·  {fonte}  ·  Correlacao Sentimento vs Preco"
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=20)
+
+    # ── Seção 1: Métrica — Sentiment Score ──────────────────────────
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "1. Sentiment Score (forca do sentimento)", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    desc_score = [
+        "Essa metrica resume o humor geral do mercado em um unico numero.",
+        "",
+        "Formula:  SentimentScore = (Positivos - Negativos) / Total",
+        "",
+        "Range:   +1 = extremamente positivo  |  0 = neutro  |  -1 = extremamente negativo",
+        "",
+        f"Score medio geral nesta analise: {media_score_geral:+.4f}",
+        f"Total de horas analisadas: {len(pontos)}",
+    ]
+    for line in desc_score:
+        pdf.cell(0, 5, line, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    # ── Seção 2: Métrica — Return After Sentiment ───────────────────
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "2. Return After Sentiment (impacto no preco)", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    desc_return = [
+        "Mede se o sentimento realmente impacta o preco.",
+        "Para cada periodo de posts, calcula o retorno da moeda apos um tempo.",
+        "",
+        "Formula:  Return = ((Preco_t+n - Preco_t) / Preco_t) x 100",
+        "",
+        "Janelas de tempo utilizadas: 1h e 4h",
+    ]
+    for line in desc_return:
+        pdf.cell(0, 5, line, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    # ── Seção 3: Resumo de Acertos ──────────────────────────────────
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "3. Resumo da Correlacao", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    resumo_lines = [
+        f"Horas comparaveis (sent. nao-neutro + preco nao-estavel): {total_comparavel}",
+        f"Acertos (sentimento previu direcao correta):              {acertos}",
+        f"Erros (sentimento nao correspondeu):                      {erros_corr}",
+        f"Taxa de acerto:                                           {taxa_acerto}%" if taxa_acerto is not None else "Taxa de acerto:                                           N/A (sem dados comparaveis)",
+    ]
+    for line in resumo_lines:
+        pdf.cell(0, 6, line, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
+
+    # ── Seção 4: Tabela detalhada ───────────────────────────────────
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 10, f"4. Tabela Detalhada por Hora ({len(pontos_pdf)} horas com posts)", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    col_w = [14, 14, 18, 18, 22, 22, 22, 22, 20]
+    col_h_names = ["Hora", "Score", "Pos", "Neg", "Preco", "Var.1h", "Ret.1h", "Ret.4h", "Result."]
+
+    pdf.set_font("Helvetica", "B", 7)
+    pdf.set_fill_color(15, 23, 42)
+    pdf.set_text_color(255, 255, 255)
+    for w, h in zip(col_w, col_h_names):
+        pdf.cell(w, 7, h, border=1, fill=True, align="C")
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 7)
+    for p in pontos_pdf:
+        if pdf.get_y() + 7 > pdf.h - 20:
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 7)
+            pdf.set_fill_color(15, 23, 42)
+            pdf.set_text_color(255, 255, 255)
+            for w, h in zip(col_w, col_h_names):
+                pdf.cell(w, 7, h, border=1, fill=True, align="C")
+            pdf.ln()
+            pdf.set_font("Helvetica", "", 7)
+
+        # Cor baseada no resultado
+        if p["acertou"] is True:
+            pdf.set_text_color(22, 163, 74)
+        elif p["acertou"] is False:
+            pdf.set_text_color(220, 38, 38)
+        else:
+            pdf.set_text_color(60, 60, 60)
+
+        score_str = f"{p['sentiment_score']:+.2f}"
+        preco_str = f"${p['preco_abertura']:,.0f}" if p["preco_abertura"] else "-"
+        var1h = f"{p['variacao_1h']:+.3f}%" if p["variacao_1h"] is not None else "-"
+        ret1h = f"{p['retorno_1h']:+.3f}%" if p["retorno_1h"] is not None else "-"
+        ret4h = f"{p['retorno_4h']:+.3f}%" if p["retorno_4h"] is not None else "-"
+
+        resultado = "Acerto" if p["acertou"] is True else "Erro" if p["acertou"] is False else "-"
+
+        pdf.cell(col_w[0], 6, p["hora"], border=1, align="C")
+        pdf.cell(col_w[1], 6, score_str, border=1, align="C")
+        pdf.cell(col_w[2], 6, str(p["positivos"]), border=1, align="C")
+        pdf.cell(col_w[3], 6, str(p["negativos"]), border=1, align="C")
+        pdf.cell(col_w[4], 6, preco_str, border=1, align="C")
+        pdf.cell(col_w[5], 6, var1h, border=1, align="C")
+        pdf.cell(col_w[6], 6, ret1h, border=1, align="C")
+        pdf.cell(col_w[7], 6, ret4h, border=1, align="C")
+
+        # Resultado com cor
+        pdf.cell(col_w[8], 6, resultado, border=1, align="C")
+        pdf.ln()
+
+    pdf.set_text_color(0, 0, 0)
+
+    # Salvar
+    nome_arquivo = f"sentcrypto_{moeda.upper()}_{fonte}_correlacao_{agora.strftime('%Y%m%d_%Hh%M')}.pdf"
+    caminho = RELATORIOS_DIR / nome_arquivo
+    pdf.output(str(caminho))
+    logger.info("Relatorio PDF de correlacao salvo em: %s", caminho)
+
+    return {
+        "mensagem": "Relatorio de correlacao gerado com sucesso!",
+        "arquivo": nome_arquivo,
+        "caminho_completo": str(caminho.resolve()),
+        "url": f"/relatorios/{nome_arquivo}",
+        "total_horas": len(pontos),
+        "taxa_acerto": taxa_acerto,
     }
 
 
@@ -894,7 +1190,12 @@ def correlacao_sentimento_preco(
         preco_info = precos_por_hora.get(chave, {})
         variacao_preco = preco_info.get("variacao_pct")
 
-        sentimento_direcao = "positivo" if media_sent > 0.55 else "negativo" if media_sent < 0.45 else "neutro"
+        # Calcular Sentiment Score para direção consistente
+        pos = grupo["positivos"]
+        neg = grupo["negativos"]
+        total_g = pos + neg + grupo["neutros"]
+        s_score = (pos - neg) / total_g if total_g > 0 else 0
+        sentimento_direcao = "positivo" if s_score > 0.1 else "negativo" if s_score < -0.1 else "neutro"
         preco_direcao = None
         acertou = None
 

@@ -50,7 +50,14 @@ function App() {
 
   const [feedTweets, setFeedTweets] = useState([]);
   const [feedLoading, setFeedLoading] = useState(false);
-  const [perfisX, setPerfisX] = useState("whale_alert, cabortopcripto");
+  const [perfisX, setPerfisX] = useState(() => {
+    return localStorage.getItem("sentcrypto_perfisX") || "whale_alert, cabortopcripto";
+  });
+
+  // Salvar perfis no localStorage sempre que mudar
+  useEffect(() => {
+    localStorage.setItem("sentcrypto_perfisX", perfisX);
+  }, [perfisX]);
 
   const [textoAnalise, setTextoAnalise] = useState("");
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
@@ -66,11 +73,17 @@ function App() {
   const [loginAuthToken, setLoginAuthToken] = useState("");
   const [loginCt0, setLoginCt0] = useState("");
 
+  const [autoCollectInterval, setAutoCollectInterval] = useState(() => {
+    return parseInt(localStorage.getItem("sentcrypto_autoCollect") || "0", 10);
+  });
+  const autoCollectRef = useRef(null);
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [correlacao, setCorrelacao] = useState(null);
   const [correlacaoLoading, setCorrelacaoLoading] = useState(false);
   const [gerandoPdf, setGerandoPdf] = useState(false);
+  const [gerandoPdfCorr, setGerandoPdfCorr] = useState(false);
 
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
@@ -209,6 +222,7 @@ function App() {
       const data = await res.json();
       setColetaMsg(data.mensagem || "Coleta finalizada!");
       await carregarDados(moeda, "reddit", dataInicio, dataFim);
+      carregarCorrelacao(moeda, "reddit");
     } catch { setErro("Falha ao coletar Reddit."); }
     finally { setColetando(false); }
   };
@@ -226,6 +240,7 @@ function App() {
       const data = await res.json();
       setColetaMsg(data.mensagem || "Coleta finalizada!");
       await carregarDados(moeda, "x", dataInicio, dataFim);
+      carregarCorrelacao(moeda, "x");
     } catch { setErro("Falha ao coletar X."); }
     finally { setColetando(false); }
   };
@@ -284,7 +299,27 @@ function App() {
       setCorrelacao(null);
     }
   }, [moeda, fonte, carregarCorrelacao]);
-
+  // Auto-coleta periódica do X
+  useEffect(() => {
+    if (autoCollectRef.current) clearInterval(autoCollectRef.current);
+    if (autoCollectInterval > 0 && fonte === "x") {
+      autoCollectRef.current = setInterval(async () => {
+        try {
+          const listaPerfis = perfisX.split(",").map((p) => p.trim().replace("@", "")).filter(Boolean);
+          const res = await fetch(`${API}/coletar/x`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ moeda, perfis: listaPerfis, limite_por_perfil: 20 }),
+          });
+          const data = await res.json();
+          setColetaMsg(`[Auto] ${data.mensagem || "Coleta autom\u00e1tica finalizada!"}`);
+          await carregarDados(moeda, "x", dataInicio, dataFim);
+          carregarCorrelacao(moeda, "x");
+        } catch { /* silent */ }
+      }, autoCollectInterval * 60 * 1000);
+    }
+    return () => { if (autoCollectRef.current) clearInterval(autoCollectRef.current); };
+  }, [autoCollectInterval, fonte, moeda, perfisX, dataInicio, dataFim, carregarDados, carregarCorrelacao]);
   // ── Gerar PDF ao clicar numa barra ──────────────────────────────
 
   const gerarPdfPorHora = async (data) => {
@@ -305,6 +340,25 @@ function App() {
       setErro(`Falha ao gerar PDF: ${e.message}`);
     } finally {
       setGerandoPdf(false);
+    }
+  };
+
+  // ── Gerar PDF de Correlação ─────────────────────────────────────
+
+  const gerarPdfCorrelacao = async () => {
+    if (gerandoPdfCorr) return;
+    setGerandoPdfCorr(true);
+    try {
+      const fonteParam = fonte === "x" ? "X" : "Reddit";
+      const res = await fetch(`${API}/gerar-relatorio-correlacao?moeda=${moeda}&fonte=${fonteParam}`, { method: "POST" });
+      if (!res.ok) throw new Error("Erro ao gerar relatório");
+      const info = await res.json();
+      window.open(`${API}${info.url}`, "_blank");
+      setColetaMsg(`PDF de correlação salvo em: ${info.caminho_completo}`);
+    } catch (e) {
+      setErro(`Falha ao gerar PDF de correlação: ${e.message}`);
+    } finally {
+      setGerandoPdfCorr(false);
     }
   };
 
@@ -656,7 +710,16 @@ function App() {
                     : "Sem dados comparáveis ainda"}
                 </span>
               </div>
-              {correlacaoLoading && <span className="spinner" />}
+              <div className="chart-header-actions">
+                {correlacaoLoading && <span className="spinner" />}
+                <button
+                  className="btn btn-primary btn--sm"
+                  onClick={gerarPdfCorrelacao}
+                  disabled={gerandoPdfCorr}
+                >
+                  {gerandoPdfCorr ? "Gerando..." : "\u{1F4C4} Gerar PDF"}
+                </button>
+              </div>
             </div>
 
             {/* Cards de resumo */}
@@ -783,6 +846,29 @@ function App() {
                 onChange={(e) => setPerfisX(e.target.value)}
                 placeholder="whale_alert, elonmusk, VitalikButerin"
               />
+            </div>
+            <div className="input-group input-group--inline">
+              <label>Coleta automática:</label>
+              <select
+                className="input input--select"
+                value={autoCollectInterval}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setAutoCollectInterval(val);
+                  localStorage.setItem("sentcrypto_autoCollect", String(val));
+                }}
+              >
+                <option value={0}>Desativada</option>
+                <option value={1}>A cada 1 min</option>
+                <option value={3}>A cada 3 min</option>
+                <option value={5}>A cada 5 min</option>
+                <option value={10}>A cada 10 min</option>
+                <option value={15}>A cada 15 min</option>
+                <option value={30}>A cada 30 min</option>
+              </select>
+              {autoCollectInterval > 0 && (
+                <span className="auto-collect-badge">\u23F1 Ativa ({autoCollectInterval}min)</span>
+              )}
             </div>
             <div className="btn-row">
               <button className="btn btn-primary" disabled={feedLoading} onClick={carregarFeedX}>
