@@ -155,6 +155,36 @@ A documentação interativa da API fica em <http://127.0.0.1:8000/docs>.
 
 ---
 
+## Coleta contínua
+
+O botão de coleta automática do dashboard depende do navegador: ele só roda
+enquanto a aba estiver aberta na fonte "X". Para acumular dados por dias ou
+semanas — que é o que a análise exige — use o coletor dedicado:
+
+```bash
+cd backend
+
+# Coleta a cada 20 minutos; Ctrl+C encerra com segurança
+python tools/coletor_continuo.py --intervalo 20
+
+# Uma rodada só (para o Agendador de Tarefas do Windows ou cron)
+python tools/coletor_continuo.py --once
+
+# Escolhendo moedas e perfis
+python tools/coletor_continuo.py --moedas BTC ETH --perfis whale_alert CoinDesk
+```
+
+Ele grava em `backend/logs/coleta.log` (rotativo) e mostra a cada rodada
+quantas **horas distintas** a base já cobre — esse é o número que limita a
+amostra da correlação, não a quantidade de posts. Rodadas frequentes são
+seguras: posts já salvos são descartados antes de chegar ao modelo.
+
+> Para maximizar a cobertura, prefira **mais perfis** a intervalos mais
+> curtos. O que amplia a amostra é ter publicações em horas diferentes do dia,
+> e um único perfil deixa muitas horas vazias.
+
+---
+
 ## Testes
 
 ```bash
