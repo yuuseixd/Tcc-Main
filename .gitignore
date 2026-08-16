@@ -30,3 +30,6 @@ build/
 
 # Relatórios PDF gerados
 backend/relatorios/*.pdf
+
+# Logs da coleta contínua
+backend/logs/

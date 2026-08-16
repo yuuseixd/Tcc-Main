@@ -44,6 +44,18 @@ class ResultadoColeta:
         }
 
 
+def extrair_id(bruto: dict) -> str | None:
+    """Identificador do post na origem, seja qual for o coletor.
+
+    O coletor do Reddit entrega ``external_id``; o do X entrega ``tweet_id``.
+    Normalizar aqui é o que faz a consulta de deduplicação enxergar os dois —
+    sem isso ela buscava uma lista de ``None`` e nunca encontrava nada,
+    deixando a proteção contra duplicatas depender só do fallback.
+    """
+    valor = bruto.get("external_id") or bruto.get("tweet_id")
+    return str(valor) if valor else None
+
+
 def ids_existentes(db: Session, fonte: str, external_ids: list[str]) -> set[str]:
     """Consulta em lote quais ``external_id`` dessa fonte já estão no banco."""
     ids_validos = [i for i in external_ids if i]
@@ -80,7 +92,7 @@ def salvar_posts(
 
     # Deduplicação contra o banco, em uma única consulta.
     ja_salvos = ids_existentes(
-        db, fonte, [p.get("external_id") for p in posts_brutos]
+        db, fonte, [extrair_id(p) for p in posts_brutos]
     )
     # Deduplicação dentro do próprio lote (o mesmo tweet pode vir de 2 perfis).
     vistos_no_lote: set[str] = set()
@@ -88,7 +100,7 @@ def salvar_posts(
     novos: list[SocialPost] = []
 
     for bruto in posts_brutos:
-        external_id = bruto.get("external_id") or bruto.get("tweet_id")
+        external_id = extrair_id(bruto)
 
         if external_id:
             if external_id in ja_salvos or external_id in vistos_no_lote:

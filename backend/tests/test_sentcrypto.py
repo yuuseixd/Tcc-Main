@@ -120,6 +120,39 @@ class TestDeduplicacao:
         svc_posts.salvar_posts(db, "BTC", "Reddit", [post_bruto("1", "bitcoin alta", BASE)])
         assert db.query(SocialPost).count() == 2
 
+    def test_deduplica_posts_do_x_que_usam_tweet_id(self, db):
+        """O coletor do X entrega 'tweet_id', não 'external_id'.
+
+        Os testes anteriores só usavam 'external_id', então a consulta de
+        deduplicação contra o banco parecia funcionar enquanto na prática
+        buscava uma lista de None para tweets — a duplicata só era barrada
+        pelo fallback lento, com erro de constraint no log.
+        """
+        lote = [
+            {"texto": "bitcoin subindo", "timestamp_post": BASE, "tweet_id": "999"},
+        ]
+
+        primeira = svc_posts.salvar_posts(db, "BTC", "X", lote)
+        assert primeira.salvos == 1
+
+        segunda = svc_posts.salvar_posts(db, "BTC", "X", lote)
+        assert segunda.salvos == 0
+        assert segunda.duplicados == 1
+        assert db.query(SocialPost).count() == 1
+
+    def test_id_numerico_e_textual_sao_o_mesmo_post(self, db):
+        """A API do X às vezes devolve o id como número, às vezes como texto."""
+        svc_posts.salvar_posts(
+            db, "BTC", "X",
+            [{"texto": "bitcoin alta", "timestamp_post": BASE, "tweet_id": 555}],
+        )
+        r = svc_posts.salvar_posts(
+            db, "BTC", "X",
+            [{"texto": "bitcoin alta", "timestamp_post": BASE, "tweet_id": "555"}],
+        )
+        assert r.duplicados == 1
+        assert db.query(SocialPost).count() == 1
+
     def test_posts_sem_id_nao_sao_confundidos(self, db):
         """Sem external_id não há como deduplicar — ambos devem ser salvos."""
         lote = [
