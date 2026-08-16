@@ -3,7 +3,21 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 venv/
+.venv/
+
+# Segredos — NUNCA versionar
 .env
+.env.local
+backend/.env
+backend/x_cookies.json
+*cookies*.json
+
+# Banco de dados local (gerado em runtime)
+*.db
+backend/dados.db
+# Arquivos auxiliares do modo WAL do SQLite
+*.db-shm
+*.db-wal
 
 # Node
 node_modules/
@@ -16,3 +30,6 @@ build/
 
 # Relatórios PDF gerados
 backend/relatorios/*.pdf
+
+# Logs da coleta contínua
+backend/logs/

@@ -10,3 +10,11 @@ pydantic
 twikit>=2.3.3
 undetected-chromedriver>=3.5.5
 selenium>=4.20.0
+
+# Tokenizadores dos modelos alternativos (XLM-RoBERTa usa SentencePiece).
+# Necessários apenas para tools/benchmark_modelos.py.
+sentencepiece
+protobuf
+
+# Testes
+pytest

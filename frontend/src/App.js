@@ -1,23 +1,30 @@
-import { useCallback, useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AreaChart,
   Area,
-  BarChart,
+  AreaChart,
   Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  ReferenceLine,
 } from "recharts";
 import "./App.css";
+import { api, API_URL, ApiError } from "./api";
+import {
+  dataCurta,
+  dataHoraCompleta,
+  moeda as fmtMoeda,
+  percentual,
+  rotuloHora,
+} from "./format";
 
-const API = "http://127.0.0.1:8000";
 const MOEDAS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "AVAX", "LINK"];
 
 const FONTES = {
@@ -26,6 +33,11 @@ const FONTES = {
   reddit: { label: "Reddit", icon: "\u{1F534}" },
   x: { label: "X / Twitter", icon: "\u{1F426}" },
 };
+
+/** Fontes que representam redes sociais (têm sentimento e correlação). */
+const FONTES_SOCIAIS = ["reddit", "x"];
+const ehSocial = (f) => FONTES_SOCIAIS.includes(f);
+const nomeFonteApi = (f) => (f === "x" ? "X" : "Reddit");
 
 const SUBREDDITS_DEFAULT = {
   BTC: ["Bitcoin", "CryptoCurrency", "BitcoinMarkets"],
@@ -37,6 +49,24 @@ const SUBREDDITS_DEFAULT = {
   AVAX: ["Avax", "CryptoCurrency"],
   LINK: ["Chainlink", "CryptoCurrency"],
 };
+
+const INTERVALOS_COLETA = [
+  { valor: 0, rotulo: "Desativada" },
+  { valor: 3, rotulo: "A cada 3 min" },
+  { valor: 5, rotulo: "A cada 5 min" },
+  { valor: 10, rotulo: "A cada 10 min" },
+  { valor: 15, rotulo: "A cada 15 min" },
+  { valor: 30, rotulo: "A cada 30 min" },
+];
+
+const listaDePerfis = (texto) =>
+  texto
+    .split(",")
+    .map((p) => p.trim().replace(/^@/, ""))
+    .filter(Boolean);
+
+/** Ignora o erro disparado quando cancelamos uma requisição de propósito. */
+const foiCancelada = (e) => e?.name === "AbortError";
 
 function App() {
   const [moeda, setMoeda] = useState("BTC");
@@ -50,14 +80,11 @@ function App() {
 
   const [feedTweets, setFeedTweets] = useState([]);
   const [feedLoading, setFeedLoading] = useState(false);
-  const [perfisX, setPerfisX] = useState(() => {
-    return localStorage.getItem("sentcrypto_perfisX") || "whale_alert, cabortopcripto";
-  });
-
-  // Salvar perfis no localStorage sempre que mudar
-  useEffect(() => {
-    localStorage.setItem("sentcrypto_perfisX", perfisX);
-  }, [perfisX]);
+  const [perfisX, setPerfisX] = useState(
+    () =>
+      localStorage.getItem("sentcrypto_perfisX") ||
+      "whale_alert, cabortopcripto",
+  );
 
   const [textoAnalise, setTextoAnalise] = useState("");
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
@@ -67,16 +94,15 @@ function App() {
   const [coletaMsg, setColetaMsg] = useState(null);
 
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const intervalRef = useRef(null);
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginAuthToken, setLoginAuthToken] = useState("");
   const [loginCt0, setLoginCt0] = useState("");
+  const [salvandoLogin, setSalvandoLogin] = useState(false);
 
-  const [autoCollectInterval, setAutoCollectInterval] = useState(() => {
-    return parseInt(localStorage.getItem("sentcrypto_autoCollect") || "0", 10);
-  });
-  const autoCollectRef = useRef(null);
+  const [autoCollectInterval, setAutoCollectInterval] = useState(() =>
+    parseInt(localStorage.getItem("sentcrypto_autoCollect") || "0", 10),
+  );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -89,115 +115,208 @@ function App() {
   const [dataFim, setDataFim] = useState("");
   const [sincronizando, setSincronizando] = useState(false);
 
-  // ── Data fetching ──────────────────────────────────────────────
+  // Cancela a requisição anterior quando os filtros mudam. Sem isso, uma
+  // resposta lenta de uma moeda antiga podia sobrescrever os dados da moeda
+  // recém-selecionada.
+  const abortRef = useRef(null);
+  const abortCorrRef = useRef(null);
+
+  useEffect(() => {
+    localStorage.setItem("sentcrypto_perfisX", perfisX);
+  }, [perfisX]);
+
+  useEffect(() => {
+    localStorage.setItem("sentcrypto_autoCollect", String(autoCollectInterval));
+  }, [autoCollectInterval]);
+
+  // ── Carregamento de dados ──────────────────────────────────────────
 
   const checkApiHealth = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/`);
-      const data = await res.json();
-      setApiOnline(data.status === "ok");
-      setTwitterOk(data.twitter_cookies || false);
+      const dados = await api.saude();
+      setApiOnline(dados.status === "ok");
+      setTwitterOk(Boolean(dados.twitter_cookies));
     } catch {
       setApiOnline(false);
     }
   }, []);
 
   const carregarDados = useCallback(async (m, f, di, df) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     setLoading(true);
     setErro(null);
+
     try {
-      const dateParams =
-        (di ? `&data_inicio=${di}` : "") + (df ? `&data_fim=${df}` : "");
+      let pontos = [];
 
-      const urlHist =
-        f === "api"
-          ? `${API}/historico-sentimento?moeda=${m}${dateParams}`
-          : f === "db"
-            ? `${API}/historico-db?moeda=${m}${dateParams}`
-            : f === "x"
-              ? `${API}/historico-social?moeda=${m}&fonte=X${dateParams}`
-              : `${API}/historico-social?moeda=${m}&fonte=Reddit${dateParams}`;
-
-      const resHist = await fetch(urlHist);
-      if (!resHist.ok) throw new Error(`Erro ${resHist.status}`);
-      const dadosHist = await resHist.json();
-
-      let mapaPrecoPorHora = {};
-      if (f === "reddit" || f === "x") {
-        try {
-          const resPreco = await fetch(
-            `${API}/historico-sentimento?moeda=${m}`,
-          );
-          const dadosPreco = await resPreco.json();
-          (dadosPreco.pontos || []).forEach((p) => {
-            const key = new Date(p.timestamp).toLocaleTimeString("pt-BR", {
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            mapaPrecoPorHora[key] = p.preco;
-          });
-        } catch {
-          /* price overlay is optional */
-        }
+      if (f === "api") {
+        pontos = (await api.historicoBinance(m, di, df, signal)).pontos || [];
+      } else if (f === "db") {
+        pontos = (await api.historicoDb(m, di, df, signal)).pontos || [];
+      } else {
+        // O preço da mesma hora já vem junto na resposta social, casado no
+        // backend. Antes eram duas chamadas, e a segunda pedia "as últimas
+        // 24h" e cruzava por "HH:MM" — chave que colide entre dias distintos.
+        const social = await api.historicoSocial(
+          m, nomeFonteApi(f), di, df, signal,
+        );
+        pontos = social.pontos || [];
       }
 
-      const formatados = (dadosHist.pontos || []).map((ponto) => {
-        const key = new Date(ponto.timestamp).toLocaleTimeString("pt-BR", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        return {
-          timestamp: key,
+      setHistorico(
+        pontos.map((ponto) => ({
+          ...ponto,
+          rotulo: rotuloHora(ponto.timestamp),
           timestamp_raw: ponto.timestamp,
-          preco:
-            f === "reddit" || f === "x"
-              ? (mapaPrecoPorHora[key] ?? null)
-              : ponto.preco,
-          indice_sentimento: ponto.indice_sentimento,
-          total_posts: ponto.total_posts,
-          positivos: ponto.positivos,
-          negativos: ponto.negativos,
-          neutros: ponto.neutros,
-        };
-      });
+        })),
+      );
 
-      setHistorico(formatados);
-
-      const resSent = await fetch(`${API}/sentimento?moeda=${m}`);
-      if (resSent.ok) setSentimento(await resSent.json());
+      try {
+        setSentimento(await api.sentimento(m, signal));
+      } catch (e) {
+        if (foiCancelada(e)) throw e;
+        setSentimento(null);
+      }
     } catch (e) {
-      console.error(e);
-      setErro("Erro ao carregar dados. Verifique se o backend está rodando.");
+      if (foiCancelada(e)) return; // troca de filtro, não é falha
+      setErro(
+        e instanceof ApiError
+          ? `Erro ao carregar dados: ${e.message}`
+          : "Não foi possível falar com o backend. Ele está rodando?",
+      );
+      setHistorico([]);
     } finally {
-      setLoading(false);
+      // Só o pedido mais recente pode desligar o indicador de carregamento.
+      if (abortRef.current === controller) setLoading(false);
     }
   }, []);
 
-  useEffect(() => { checkApiHealth(); }, [checkApiHealth]);
-  useEffect(() => { carregarDados(moeda, fonte, dataInicio, dataFim); }, [moeda, fonte, dataInicio, dataFim, carregarDados]);
+  const carregarCorrelacao = useCallback(async (m, f) => {
+    if (!ehSocial(f)) {
+      setCorrelacao(null);
+      return;
+    }
+
+    abortCorrRef.current?.abort();
+    const controller = new AbortController();
+    abortCorrRef.current = controller;
+
+    setCorrelacaoLoading(true);
+    try {
+      setCorrelacao(
+        await api.correlacao(m, nomeFonteApi(f), controller.signal),
+      );
+    } catch (e) {
+      if (!foiCancelada(e)) setCorrelacao(null);
+    } finally {
+      if (abortCorrRef.current === controller) setCorrelacaoLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (autoRefresh) {
-      intervalRef.current = setInterval(() => carregarDados(moeda, fonte, dataInicio, dataFim), 60000);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    checkApiHealth();
+  }, [checkApiHealth]);
+
+  useEffect(() => {
+    carregarDados(moeda, fonte, dataInicio, dataFim);
+  }, [moeda, fonte, dataInicio, dataFim, carregarDados]);
+
+  useEffect(() => {
+    carregarCorrelacao(moeda, fonte);
+  }, [moeda, fonte, carregarCorrelacao]);
+
+  // Cancela requisições pendentes ao desmontar.
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortCorrRef.current?.abort();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!autoRefresh) return undefined;
+    const id = setInterval(
+      () => carregarDados(moeda, fonte, dataInicio, dataFim),
+      60000,
+    );
+    return () => clearInterval(id);
   }, [autoRefresh, moeda, fonte, dataInicio, dataFim, carregarDados]);
 
-  // ── Handlers ───────────────────────────────────────────────────
+  // ── Coleta ─────────────────────────────────────────────────────────
+
+  const executarColeta = useCallback(
+    async (f, { silencioso = false } = {}) => {
+      const corpo =
+        f === "x"
+          ? {
+              moeda,
+              perfis: listaDePerfis(perfisX),
+              limite_por_perfil: 20,
+            }
+          : {
+              moeda,
+              subreddits: SUBREDDITS_DEFAULT[moeda] || ["CryptoCurrency"],
+              limite_por_sub: 25,
+              ordenacao: "new",
+            };
+
+      if (f === "x" && corpo.perfis.length === 0) {
+        setErro("Informe ao menos um perfil do X.");
+        return;
+      }
+
+      if (!silencioso) setColetando(true);
+      try {
+        const dados =
+          f === "x" ? await api.coletarX(corpo) : await api.coletarReddit(corpo);
+        setColetaMsg(`${silencioso ? "[Auto] " : ""}${dados.mensagem}`);
+        await carregarDados(moeda, f, dataInicio, dataFim);
+        carregarCorrelacao(moeda, f);
+      } catch (e) {
+        if (!silencioso) {
+          setErro(
+            e instanceof ApiError
+              ? `Falha na coleta: ${e.message}`
+              : "Falha ao coletar. Verifique o backend.",
+          );
+        }
+      } finally {
+        if (!silencioso) setColetando(false);
+      }
+    },
+    [moeda, perfisX, dataInicio, dataFim, carregarDados, carregarCorrelacao],
+  );
+
+  // Coleta automática periódica do X.
+  useEffect(() => {
+    if (autoCollectInterval <= 0 || fonte !== "x") return undefined;
+    const id = setInterval(
+      () => executarColeta("x", { silencioso: true }),
+      autoCollectInterval * 60 * 1000,
+    );
+    return () => clearInterval(id);
+  }, [autoCollectInterval, fonte, executarColeta]);
 
   const carregarFeedX = async () => {
+    const perfis = listaDePerfis(perfisX);
+    if (perfis.length === 0) {
+      setErro("Informe ao menos um perfil do X.");
+      return;
+    }
+
     setFeedLoading(true);
     setErro(null);
     try {
-      const listaPerfis = perfisX.split(",").map((p) => p.trim().replace("@", "")).filter(Boolean);
-      const res = await fetch(`${API}/feed/x`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ perfis: listaPerfis, limite_por_perfil: 30 }),
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || "Erro"); }
-      const data = await res.json();
-      setFeedTweets(data.tweets || []);
+      const dados = await api.feedX({ perfis, limite_por_perfil: 30 });
+      setFeedTweets(dados.tweets || []);
+      if ((dados.tweets || []).length === 0) {
+        setColetaMsg("Nenhum tweet retornado para esses perfis.");
+      }
     } catch (e) {
       setErro(`Falha ao carregar feed: ${e.message}`);
     } finally {
@@ -205,137 +324,64 @@ function App() {
     }
   };
 
-  const coletarReddit = async () => {
-    setColetando(true);
-    setColetaMsg(null);
-    try {
-      const res = await fetch(`${API}/coletar/reddit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          moeda,
-          subreddits: SUBREDDITS_DEFAULT[moeda] || ["CryptoCurrency"],
-          limite_por_sub: 25,
-          ordenacao: "new",
-        }),
-      });
-      const data = await res.json();
-      setColetaMsg(data.mensagem || "Coleta finalizada!");
-      await carregarDados(moeda, "reddit", dataInicio, dataFim);
-      carregarCorrelacao(moeda, "reddit");
-    } catch { setErro("Falha ao coletar Reddit."); }
-    finally { setColetando(false); }
-  };
-
-  const coletarX = async () => {
-    setColetando(true);
-    setColetaMsg(null);
-    try {
-      const listaPerfis = perfisX.split(",").map((p) => p.trim().replace("@", "")).filter(Boolean);
-      const res = await fetch(`${API}/coletar/x`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ moeda, perfis: listaPerfis, limite_por_perfil: 20 }),
-      });
-      const data = await res.json();
-      setColetaMsg(data.mensagem || "Coleta finalizada!");
-      await carregarDados(moeda, "x", dataInicio, dataFim);
-      carregarCorrelacao(moeda, "x");
-    } catch { setErro("Falha ao coletar X."); }
-    finally { setColetando(false); }
-  };
-
   const analisarTexto = async () => {
     if (!textoAnalise.trim()) return;
     setAnalisando(true);
     setResultadoAnalise(null);
     try {
-      const res = await fetch(`${API}/analisar-texto`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: textoAnalise, moeda }),
-      });
-      if (!res.ok) throw new Error("Erro");
-      setResultadoAnalise(await res.json());
-    } catch { setErro("Falha ao analisar texto."); }
-    finally { setAnalisando(false); }
+      setResultadoAnalise(await api.analisarTexto(textoAnalise, moeda));
+    } catch (e) {
+      setErro(`Falha ao analisar texto: ${e.message}`);
+    } finally {
+      setAnalisando(false);
+    }
   };
 
   const salvarCookiesTwitter = async () => {
+    setSalvandoLogin(true);
     try {
-      const res = await fetch(`${API}/login/x`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auth_token: loginAuthToken, ct0: loginCt0 }),
-      });
-      if (!res.ok) throw new Error("Erro");
+      await api.loginX(loginAuthToken, loginCt0);
       setTwitterOk(true);
       setShowLoginModal(false);
       setLoginAuthToken("");
       setLoginCt0("");
-    } catch { setErro("Falha ao salvar cookies."); }
+      setColetaMsg("Cookies do X salvos com sucesso!");
+    } catch (e) {
+      setErro(`Falha ao salvar cookies: ${e.message}`);
+    } finally {
+      setSalvandoLogin(false);
+    }
   };
 
-  // ── Correlação ─────────────────────────────────────────────────
-
-  const carregarCorrelacao = useCallback(async (m, f) => {
-    if (f !== "reddit" && f !== "x") return;
-    setCorrelacaoLoading(true);
+  const sincronizarBinance = async () => {
+    setSincronizando(true);
     try {
-      const fonteParam = f === "x" ? "X" : "Reddit";
-      const res = await fetch(`${API}/correlacao?moeda=${m}&fonte=${fonteParam}`);
-      if (res.ok) {
-        const data = await res.json();
-        setCorrelacao(data);
-      }
-    } catch { /* optional */ }
-    finally { setCorrelacaoLoading(false); }
-  }, []);
-
-  useEffect(() => {
-    if (fonte === "reddit" || fonte === "x") {
-      carregarCorrelacao(moeda, fonte);
-    } else {
-      setCorrelacao(null);
+      const dados = await api.syncBinance(moeda, 7);
+      setColetaMsg(dados.mensagem);
+      await carregarDados(moeda, fonte, dataInicio, dataFim);
+    } catch (e) {
+      setErro(`Erro ao sincronizar: ${e.message}`);
+    } finally {
+      setSincronizando(false);
     }
-  }, [moeda, fonte, carregarCorrelacao]);
-  // Auto-coleta periódica do X
-  useEffect(() => {
-    if (autoCollectRef.current) clearInterval(autoCollectRef.current);
-    if (autoCollectInterval > 0 && fonte === "x") {
-      autoCollectRef.current = setInterval(async () => {
-        try {
-          const listaPerfis = perfisX.split(",").map((p) => p.trim().replace("@", "")).filter(Boolean);
-          const res = await fetch(`${API}/coletar/x`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ moeda, perfis: listaPerfis, limite_por_perfil: 20 }),
-          });
-          const data = await res.json();
-          setColetaMsg(`[Auto] ${data.mensagem || "Coleta autom\u00e1tica finalizada!"}`);
-          await carregarDados(moeda, "x", dataInicio, dataFim);
-          carregarCorrelacao(moeda, "x");
-        } catch { /* silent */ }
-      }, autoCollectInterval * 60 * 1000);
-    }
-    return () => { if (autoCollectRef.current) clearInterval(autoCollectRef.current); };
-  }, [autoCollectInterval, fonte, moeda, perfisX, dataInicio, dataFim, carregarDados, carregarCorrelacao]);
-  // ── Gerar PDF ao clicar numa barra ──────────────────────────────
+  };
 
-  const gerarPdfPorHora = async (data) => {
-    if (!data?.timestamp_raw || gerandoPdf) return;
+  // ── Relatórios ─────────────────────────────────────────────────────
+
+  const abrirPdf = (url) => window.open(`${API_URL}${url}`, "_blank", "noopener");
+
+  const gerarPdfPorHora = async (ponto) => {
+    if (!ponto?.timestamp_raw || gerandoPdf) return;
     setGerandoPdf(true);
     try {
-      const fonteParam = fonte === "x" ? "X" : "Reddit";
-      const indice = data.indice_sentimento != null ? data.indice_sentimento : "";
-      const url = `${API}/gerar-relatorio?moeda=${moeda}&fonte=${fonteParam}&hora=${encodeURIComponent(data.timestamp_raw)}&indice=${indice}`;
-      const res = await fetch(url, { method: "POST" });
-      if (!res.ok) throw new Error("Erro ao gerar relatório");
-      const info = await res.json();
-
-      // Abrir o PDF gerado no backend (servido como static file)
-      window.open(`${API}${info.url}`, "_blank");
-      setColetaMsg(`PDF salvo em: ${info.caminho_completo}`);
+      const info = await api.gerarRelatorio(
+        moeda,
+        nomeFonteApi(fonte),
+        ponto.timestamp_raw,
+        ponto.indice_sentimento,
+      );
+      abrirPdf(info.url);
+      setColetaMsg(`Relatório salvo: ${info.arquivo}`);
     } catch (e) {
       setErro(`Falha ao gerar PDF: ${e.message}`);
     } finally {
@@ -343,18 +389,13 @@ function App() {
     }
   };
 
-  // ── Gerar PDF de Correlação ─────────────────────────────────────
-
   const gerarPdfCorrelacao = async () => {
     if (gerandoPdfCorr) return;
     setGerandoPdfCorr(true);
     try {
-      const fonteParam = fonte === "x" ? "X" : "Reddit";
-      const res = await fetch(`${API}/gerar-relatorio-correlacao?moeda=${moeda}&fonte=${fonteParam}`, { method: "POST" });
-      if (!res.ok) throw new Error("Erro ao gerar relatório");
-      const info = await res.json();
-      window.open(`${API}${info.url}`, "_blank");
-      setColetaMsg(`PDF de correlação salvo em: ${info.caminho_completo}`);
+      const info = await api.gerarRelatorioCorrelacao(moeda, nomeFonteApi(fonte));
+      abrirPdf(info.url);
+      setColetaMsg(`Relatório de correlação salvo: ${info.arquivo}`);
     } catch (e) {
       setErro(`Falha ao gerar PDF de correlação: ${e.message}`);
     } finally {
@@ -362,24 +403,47 @@ function App() {
     }
   };
 
-  // ── Visual helpers ─────────────────────────────────────────────
+  // ── Helpers visuais ────────────────────────────────────────────────
 
-  const corSent = (s) => s === "positivo" ? "#22c55e" : s === "negativo" ? "#ef4444" : s === "nulo" ? "#64748b" : "#eab308";
-  const sentAtualCor = corSent(sentimento?.sentimento_atual);
-  const variacao = sentimento?.variacao_percentual || 0;
-  const variacaoCor = variacao > 0 ? "#22c55e" : variacao < 0 ? "#ef4444" : "#9ca3af";
+  const corSent = (s) =>
+    s === "positivo"
+      ? "#22c55e"
+      : s === "negativo"
+        ? "#ef4444"
+        : s === "nulo"
+          ? "#64748b"
+          : "#eab308";
 
-  const sentIndex = sentimento?.indice_sentimento || 0.5;
+  const corIndice = (v) =>
+    v == null ? "#64748b" : v > 0.6 ? "#22c55e" : v < 0.4 ? "#ef4444" : "#eab308";
+
+  const variacao = sentimento?.variacao_percentual ?? 0;
+  const variacaoCor =
+    variacao > 0 ? "#22c55e" : variacao < 0 ? "#ef4444" : "#9ca3af";
+  const sentIndex = sentimento?.indice_sentimento ?? 0.5;
   const pieData = [
     { name: "Positivo", value: sentIndex },
     { name: "Negativo", value: 1 - sentIndex },
   ];
 
+  const resumoCorr = correlacao?.resumo;
+  const temCorrelacao = ehSocial(fonte) && correlacao?.pontos?.length > 0;
+
+  const tooltipStyle = {
+    backgroundColor: "#0f172a",
+    border: "1px solid #334155",
+    borderRadius: 12,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+  };
+
   return (
     <div className="app">
-      {/* MOBILE HAMBURGER */}
-      <button className="hamburger" onClick={() => setSidebarOpen(!sidebarOpen)}>
-        {sidebarOpen ? "\u2715" : "\u2630"}
+      <button
+        className="hamburger"
+        onClick={() => setSidebarOpen((v) => !v)}
+        aria-label="Abrir menu"
+      >
+        {sidebarOpen ? "✕" : "☰"}
       </button>
 
       {/* SIDEBAR */}
@@ -395,11 +459,16 @@ function App() {
               <button
                 key={m}
                 className={`sidebar-item ${moeda === m ? "sidebar-item--active" : ""}`}
-                onClick={() => { setMoeda(m); setSidebarOpen(false); }}
+                onClick={() => {
+                  setMoeda(m);
+                  setSidebarOpen(false);
+                }}
               >
                 <span className="coin-name">{m}</span>
                 {moeda === m && sentimento && (
-                  <span className="coin-price">${sentimento.preco?.toLocaleString("en-US")}</span>
+                  <span className="coin-price">
+                    {fmtMoeda(sentimento.preco)}
+                  </span>
                 )}
               </button>
             ))}
@@ -408,14 +477,25 @@ function App() {
           <div className="sidebar-status">
             <p className="sidebar-label">Status</p>
             <div className="status-item">
-              <span className={`status-dot ${apiOnline ? "status-dot--ok" : "status-dot--err"}`} />
+              <span
+                className={`status-dot ${apiOnline ? "status-dot--ok" : "status-dot--err"}`}
+              />
               API {apiOnline ? "Online" : "Offline"}
             </div>
             <div className="status-item">
-              <span className={`status-dot ${twitterOk ? "status-dot--ok" : "status-dot--warn"}`} />
+              <span
+                className={`status-dot ${twitterOk ? "status-dot--ok" : "status-dot--warn"}`}
+              />
               Twitter{" "}
-              {twitterOk ? "OK" : (
-                <button className="link-btn" onClick={() => setShowLoginModal(true)}>Configurar</button>
+              {twitterOk ? (
+                "OK"
+              ) : (
+                <button
+                  className="link-btn"
+                  onClick={() => setShowLoginModal(true)}
+                >
+                  Configurar
+                </button>
               )}
             </div>
           </div>
@@ -431,15 +511,27 @@ function App() {
       <main className="main">
         <header className="header">
           <div className="header-left">
-            <h1>Dashboard <span className="highlight">{moeda}/USDT</span></h1>
-            <p className="subtitle">Análise de sentimento em tempo real com inteligência artificial</p>
+            <h1>
+              Dashboard <span className="highlight">{moeda}/USDT</span>
+            </h1>
+            <p className="subtitle">
+              Análise de sentimento em tempo real com inteligência artificial
+            </p>
           </div>
           <div className="header-right">
             <label className="auto-refresh">
-              <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />
               Auto-refresh
             </label>
-            <button className="btn btn-ghost" onClick={() => carregarDados(moeda, fonte, dataInicio, dataFim)} disabled={loading}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => carregarDados(moeda, fonte, dataInicio, dataFim)}
+              disabled={loading}
+            >
               ↻ Atualizar
             </button>
           </div>
@@ -448,18 +540,17 @@ function App() {
         {/* FONTE DE DADOS */}
         <section className="controls">
           <div className="toggle-group">
-            {Object.entries(FONTES).map(([key, { label, icon }]) => (
+            {Object.entries(FONTES).map(([chave, { label, icon }]) => (
               <button
-                key={key}
-                className={`toggle-button ${fonte === key ? "toggle-button--active" : ""}`}
-                onClick={() => setFonte(key)}
+                key={chave}
+                className={`toggle-button ${fonte === chave ? "toggle-button--active" : ""}`}
+                onClick={() => setFonte(chave)}
               >
                 {icon} {label}
               </button>
             ))}
           </div>
 
-          {/* Filtro de data */}
           <div className="date-filter">
             <label className="date-filter__label">
               De:
@@ -467,6 +558,7 @@ function App() {
                 type="date"
                 className="date-filter__input"
                 value={dataInicio}
+                max={dataFim || undefined}
                 onChange={(e) => setDataInicio(e.target.value)}
               />
             </label>
@@ -476,13 +568,17 @@ function App() {
                 type="date"
                 className="date-filter__input"
                 value={dataFim}
+                min={dataInicio || undefined}
                 onChange={(e) => setDataFim(e.target.value)}
               />
             </label>
             {(dataInicio || dataFim) && (
               <button
                 className="btn btn-ghost btn--sm"
-                onClick={() => { setDataInicio(""); setDataFim(""); }}
+                onClick={() => {
+                  setDataInicio("");
+                  setDataFim("");
+                }}
               >
                 Limpar datas
               </button>
@@ -491,21 +587,11 @@ function App() {
               <button
                 className="btn btn-primary btn--sm"
                 disabled={sincronizando}
-                onClick={async () => {
-                  setSincronizando(true);
-                  try {
-                    const res = await fetch(`${API}/sync-binance?moeda=${moeda}&dias=7`, { method: "POST" });
-                    const data = await res.json();
-                    setColetaMsg(`Sincronização: ${data.novos} novos pontos salvos.`);
-                    carregarDados(moeda, fonte, dataInicio, dataFim);
-                  } catch (e) {
-                    setErro("Erro ao sincronizar: " + e.message);
-                  } finally {
-                    setSincronizando(false);
-                  }
-                }}
+                onClick={sincronizarBinance}
               >
-                {sincronizando ? "Sincronizando..." : "\u{1F504} Sincronizar Binance (7d)"}
+                {sincronizando
+                  ? "Sincronizando..."
+                  : "\u{1F504} Sincronizar Binance (7d)"}
               </button>
             )}
           </div>
@@ -515,13 +601,17 @@ function App() {
         {erro && (
           <div className="toast toast--error">
             <span>⚠ {erro}</span>
-            <button className="toast-close" onClick={() => setErro(null)}>✕</button>
+            <button className="toast-close" onClick={() => setErro(null)}>
+              ✕
+            </button>
           </div>
         )}
         {coletaMsg && (
           <div className="toast toast--success">
             <span>✓ {coletaMsg}</span>
-            <button className="toast-close" onClick={() => setColetaMsg(null)}>✕</button>
+            <button className="toast-close" onClick={() => setColetaMsg(null)}>
+              ✕
+            </button>
           </div>
         )}
 
@@ -531,11 +621,9 @@ function App() {
             <div className="card-icon">{"\u{1F4B0}"}</div>
             <div>
               <p className="card-label">Preço Atual</p>
-              <p className="card-value">
-                {sentimento ? `$${sentimento.preco?.toLocaleString("en-US")}` : "\u2014"}
-              </p>
+              <p className="card-value">{fmtMoeda(sentimento?.preco)}</p>
               <p className="card-extra" style={{ color: variacaoCor }}>
-                {variacao > 0 ? "\u25B2" : variacao < 0 ? "\u25BC" : "\u2014"}{" "}
+                {variacao > 0 ? "▲" : variacao < 0 ? "▼" : "—"}{" "}
                 {Math.abs(variacao).toFixed(2)}%
               </p>
             </div>
@@ -545,10 +633,18 @@ function App() {
             <div className="card-icon">{"\u{1F9E0}"}</div>
             <div>
               <p className="card-label">Sentimento (Candle)</p>
-              <p className="card-value" style={{ color: sentAtualCor, textTransform: "capitalize" }}>
-                {sentimento?.sentimento_atual || "\u2014"}
+              <p
+                className="card-value"
+                style={{
+                  color: corSent(sentimento?.sentimento_atual),
+                  textTransform: "capitalize",
+                }}
+              >
+                {sentimento?.sentimento_atual || "—"}
               </p>
-              <p className="card-extra">Índice: {sentimento?.indice_sentimento ?? "—"}</p>
+              <p className="card-extra">
+                Índice: {sentimento?.indice_sentimento ?? "—"}
+              </p>
             </div>
           </div>
 
@@ -557,9 +653,7 @@ function App() {
             <div>
               <p className="card-label">Última Atualização</p>
               <p className="card-value small">
-                {sentimento?.ultimo_update
-                  ? new Date(sentimento.ultimo_update).toLocaleString("pt-BR")
-                  : "\u2014"}
+                {dataHoraCompleta(sentimento?.ultimo_update)}
               </p>
             </div>
           </div>
@@ -570,10 +664,14 @@ function App() {
               <PieChart width={120} height={70}>
                 <Pie
                   data={pieData}
-                  cx={60} cy={65}
-                  startAngle={180} endAngle={0}
-                  innerRadius={40} outerRadius={55}
-                  paddingAngle={2} dataKey="value"
+                  cx={60}
+                  cy={65}
+                  startAngle={180}
+                  endAngle={0}
+                  innerRadius={40}
+                  outerRadius={55}
+                  paddingAngle={2}
+                  dataKey="value"
                 >
                   <Cell fill="#22c55e" />
                   <Cell fill="#ef4444" />
@@ -584,12 +682,18 @@ function App() {
           </div>
         </section>
 
-        {/* GRÁFICO */}
+        {/* GRÁFICO PRINCIPAL */}
         <section className="chart-section">
           <div className="chart-header">
             <div>
-              <h2>{fonte === "api" || fonte === "db" ? "Histórico de Preço" : "Histórico — Preço × Sentimento"}</h2>
-              <span className="chart-pill">{FONTES[fonte]?.icon} {FONTES[fonte]?.label}</span>
+              <h2>
+                {ehSocial(fonte)
+                  ? "Histórico — Preço × Sentimento"
+                  : "Histórico de Preço"}
+              </h2>
+              <span className="chart-pill">
+                {FONTES[fonte]?.icon} {FONTES[fonte]?.label} · horários em UTC
+              </span>
             </div>
             {loading && <span className="spinner" />}
           </div>
@@ -597,15 +701,16 @@ function App() {
           {historico.length === 0 ? (
             <div className="chart-wrapper">
               <p className="no-data">
-                Nenhum dado encontrado para {moeda} + {FONTES[fonte]?.label}.
-                {fonte === "reddit" && " Clique em 'Coletar Reddit' para buscar posts."}
-                {fonte === "x" && " Clique em 'Coletar X' para buscar tweets."}
+                {loading
+                  ? "Carregando..."
+                  : `Nenhum dado encontrado para ${moeda} + ${FONTES[fonte]?.label}.`}
+                {!loading && fonte === "reddit" && " Clique em 'Coletar Reddit'."}
+                {!loading && fonte === "x" && " Clique em 'Analisar e salvar'."}
               </p>
             </div>
-          ) : (fonte === "api" || fonte === "db") ? (
-            /* ── Binance / DB: apenas preço ── */
+          ) : !ehSocial(fonte) ? (
             <div className="chart-wrapper">
-              <ResponsiveContainer>
+              <ResponsiveContainer minWidth={0} minHeight={180}>
                 <AreaChart data={historico}>
                   <defs>
                     <linearGradient id="gradPreco" x1="0" y1="0" x2="0" y2="1">
@@ -614,25 +719,38 @@ function App() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="timestamp" stroke="#64748b" tick={{ fontSize: 12 }} />
-                  <YAxis stroke="#60a5fa" tickFormatter={(v) => v == null ? "" : `$${Number(v).toLocaleString()}`} tick={{ fontSize: 12 }} />
+                  <XAxis dataKey="rotulo" stroke="#64748b" tick={{ fontSize: 12 }} />
+                  <YAxis
+                    stroke="#60a5fa"
+                    domain={["auto", "auto"]}
+                    tickFormatter={(v) =>
+                      v == null ? "" : `$${Number(v).toLocaleString()}`
+                    }
+                    tick={{ fontSize: 12 }}
+                  />
                   <Tooltip
-                    contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
-                    itemStyle={{ fontSize: 13 }}
-                    formatter={(v) => v != null ? [`$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2 })}`, "Preço"] : ["-", "Preço"]}
+                    contentStyle={tooltipStyle}
+                    formatter={(v) => [fmtMoeda(v), "Preço"]}
                   />
                   <Legend wrapperStyle={{ fontSize: 13 }} />
-                  <Area type="monotone" dataKey="preco" name="Preço (USD)" stroke="#60a5fa" strokeWidth={2} fill="url(#gradPreco)" dot={false} connectNulls={false} />
+                  <Area
+                    type="monotone"
+                    dataKey="preco"
+                    name="Preço (USD)"
+                    stroke="#60a5fa"
+                    strokeWidth={2}
+                    fill="url(#gradPreco)"
+                    dot={false}
+                    connectNulls={false}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
           ) : (
-            /* ── Reddit / X: dois gráficos empilhados ── */
             <div className="chart-dual">
-              {/* Gráfico de Preço */}
               <div className="chart-wrapper chart-wrapper--half">
                 <p className="chart-sublabel">Preço (USD)</p>
-                <ResponsiveContainer>
+                <ResponsiveContainer minWidth={0} minHeight={180}>
                   <AreaChart data={historico}>
                     <defs>
                       <linearGradient id="gradPreco2" x1="0" y1="0" x2="0" y2="1">
@@ -641,55 +759,88 @@ function App() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="timestamp" stroke="#64748b" tick={{ fontSize: 11 }} />
-                    <YAxis stroke="#60a5fa" tickFormatter={(v) => v == null ? "" : `$${Number(v).toLocaleString()}`} tick={{ fontSize: 11 }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 12 }}
-                      formatter={(v) => v != null ? [`$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2 })}`, "Preço"] : ["-", "Preço"]}
+                    <XAxis dataKey="rotulo" stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <YAxis
+                      stroke="#60a5fa"
+                      domain={["auto", "auto"]}
+                      tickFormatter={(v) =>
+                        v == null ? "" : `$${Number(v).toLocaleString()}`
+                      }
+                      tick={{ fontSize: 11 }}
                     />
-                    <Area type="monotone" dataKey="preco" name="Preço (USD)" stroke="#60a5fa" strokeWidth={2} fill="url(#gradPreco2)" dot={false} connectNulls />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      formatter={(v) => [fmtMoeda(v), "Preço"]}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="preco"
+                      name="Preço (USD)"
+                      stroke="#60a5fa"
+                      strokeWidth={2}
+                      fill="url(#gradPreco2)"
+                      dot={false}
+                      connectNulls
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
 
-              {/* Gráfico de Sentimento */}
               <div className="chart-wrapper chart-wrapper--half">
                 <p className="chart-sublabel">
                   Sentimento (0% negativo — 50% neutro — 100% positivo)
                   {gerandoPdf && <span className="spinner spinner--inline" />}
-                  <span className="chart-sublabel-hint">Clique numa barra para gerar relatório PDF</span>
+                  <span className="chart-sublabel-hint">
+                    Clique numa barra para gerar o relatório PDF da hora
+                  </span>
                 </p>
-                <ResponsiveContainer>
+                <ResponsiveContainer minWidth={0} minHeight={180}>
                   <BarChart data={historico}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="timestamp" stroke="#64748b" tick={{ fontSize: 11 }} />
-                    <YAxis stroke="#34d399" domain={[0, 1]} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 11 }} />
+                    <XAxis dataKey="rotulo" stroke="#64748b" tick={{ fontSize: 11 }} />
+                    <YAxis
+                      stroke="#34d399"
+                      domain={[0, 1]}
+                      tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
+                      tick={{ fontSize: 11 }}
+                    />
                     <Tooltip
-                      contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 12 }}
-                      formatter={(v, name, props) => {
-                        const p = props?.payload;
+                      contentStyle={tooltipStyle}
+                      formatter={(v, nome, props) => {
+                        const p = props?.payload || {};
                         return [
-                          `${(v * 100).toFixed(1)}% (${p?.total_posts || 0} posts: ${p?.positivos || 0}+ / ${p?.negativos || 0}- / ${p?.neutros || 0}=)`,
-                          "Sentimento"
+                          `${(v * 100).toFixed(1)}% — ${p.total_posts || 0} posts ` +
+                            `(${p.positivos || 0} pos / ${p.negativos || 0} neg / ${p.neutros || 0} neu)`,
+                          "Sentimento",
                         ];
                       }}
                     />
-                    <ReferenceLine y={0.5} stroke="#eab308" strokeDasharray="3 3" label={{ value: "Neutro", fill: "#eab308", fontSize: 11, position: "right" }} />
+                    <ReferenceLine
+                      y={0.5}
+                      stroke="#eab308"
+                      strokeDasharray="3 3"
+                      label={{
+                        value: "Neutro",
+                        fill: "#eab308",
+                        fontSize: 11,
+                        position: "right",
+                      }}
+                    />
                     <Bar
                       dataKey="indice_sentimento"
                       name="Sentimento"
                       radius={[4, 4, 0, 0]}
                       maxBarSize={40}
                       style={{ cursor: "pointer" }}
-                      onClick={(data) => {
-                        if (data?.payload) gerarPdfPorHora(data.payload);
-                      }}
+                      onClick={(data) => gerarPdfPorHora(data?.payload)}
                     >
-                      {historico.map((entry, index) => {
-                        const val = entry.indice_sentimento;
-                        const color = val > 0.6 ? "#22c55e" : val < 0.4 ? "#ef4444" : "#eab308";
-                        return <Cell key={`cell-${index}`} fill={color} fillOpacity={0.8} />;
-                      })}
+                      {historico.map((entrada, i) => (
+                        <Cell
+                          key={`c-${i}`}
+                          fill={corIndice(entrada.indice_sentimento)}
+                          fillOpacity={0.85}
+                        />
+                      ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -698,16 +849,16 @@ function App() {
           )}
         </section>
 
-        {/* CORRELAÇÃO SENTIMENTO vs PREÇO */}
-        {(fonte === "reddit" || fonte === "x") && correlacao && correlacao.pontos?.length > 0 && (
+        {/* CORRELAÇÃO */}
+        {temCorrelacao && (
           <section className="chart-section correlation-section">
             <div className="chart-header">
               <div>
                 <h2>{"\u{1F4CA}"} Correlação: Sentimento vs Preço</h2>
                 <span className="chart-pill">
-                  {correlacao.resumo?.taxa_acerto_pct != null
-                    ? `Taxa de acerto: ${correlacao.resumo.taxa_acerto_pct}%`
-                    : "Sem dados comparáveis ainda"}
+                  {resumoCorr?.taxa_acerto_pct != null
+                    ? `Taxa de acerto: ${resumoCorr.taxa_acerto_pct}% (${resumoCorr.total_comparavel} horas)`
+                    : "Sem horas comparáveis ainda"}
                 </span>
               </div>
               <div className="chart-header-actions">
@@ -722,98 +873,187 @@ function App() {
               </div>
             </div>
 
-            {/* Cards de resumo */}
-            {correlacao.resumo?.total_comparavel > 0 && (
+            {/* Ressalva estatística: amostra pequena não sustenta conclusão. */}
+            {resumoCorr?.total_comparavel > 0 && !resumoCorr?.amostra_suficiente && (
+              <p className="corr-aviso">
+                ⚠ Amostra pequena ({resumoCorr.total_comparavel} horas
+                comparáveis). A taxa de acerto é indicativa e ainda não sustenta
+                conclusão estatística — colete mais dados.
+              </p>
+            )}
+
+            {resumoCorr?.total_comparavel > 0 && (
               <div className="corr-summary">
                 <div className="corr-card corr-card--acerto">
-                  <span className="corr-card-value">{correlacao.resumo.acertos}</span>
+                  <span className="corr-card-value">{resumoCorr.acertos}</span>
                   <span className="corr-card-label">Acertos</span>
-                  <span className="corr-card-desc">Sentimento previu direção correta</span>
+                  <span className="corr-card-desc">
+                    Sentimento previu a direção
+                  </span>
                 </div>
                 <div className="corr-card corr-card--erro">
-                  <span className="corr-card-value">{correlacao.resumo.erros}</span>
+                  <span className="corr-card-value">{resumoCorr.erros}</span>
                   <span className="corr-card-label">Erros</span>
-                  <span className="corr-card-desc">Sentimento não correspondeu</span>
+                  <span className="corr-card-desc">Não correspondeu</span>
                 </div>
                 <div className="corr-card corr-card--taxa">
-                  <span className="corr-card-value">{correlacao.resumo.taxa_acerto_pct}%</span>
+                  <span className="corr-card-value">
+                    {resumoCorr.taxa_acerto_pct}%
+                  </span>
                   <span className="corr-card-label">Taxa de Acerto</span>
-                  <span className="corr-card-desc">De {correlacao.resumo.total_comparavel} horas comparáveis</span>
+                  <span className="corr-card-desc">
+                    De {resumoCorr.total_comparavel} horas comparáveis
+                  </span>
+                </div>
+                <div className="corr-card">
+                  <span className="corr-card-value">
+                    {percentual(resumoCorr.retorno_medio_apos_positivo, 3)}
+                  </span>
+                  <span className="corr-card-label">Retorno pós-positivo</span>
+                  <span className="corr-card-desc">Média em 1h</span>
+                </div>
+                <div className="corr-card">
+                  <span className="corr-card-value">
+                    {percentual(resumoCorr.retorno_medio_apos_negativo, 3)}
+                  </span>
+                  <span className="corr-card-label">Retorno pós-negativo</span>
+                  <span className="corr-card-desc">Média em 1h</span>
                 </div>
               </div>
             )}
 
-            {/* Gráfico comparativo */}
             <div className="chart-wrapper">
-              <ResponsiveContainer>
+              <ResponsiveContainer minWidth={0} minHeight={180}>
                 <BarChart data={correlacao.pontos}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                   <XAxis dataKey="hora" stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <YAxis yAxisId="sent" stroke="#a78bfa" domain={[0, 1]} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 11 }} />
-                  <YAxis yAxisId="preco" orientation="right" stroke="#60a5fa" tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`} tick={{ fontSize: 11 }} />
+                  <YAxis
+                    yAxisId="sent"
+                    stroke="#a78bfa"
+                    domain={[-1, 1]}
+                    tickFormatter={(v) => v.toFixed(1)}
+                    tick={{ fontSize: 11 }}
+                  />
+                  <YAxis
+                    yAxisId="preco"
+                    orientation="right"
+                    stroke="#60a5fa"
+                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`}
+                    tick={{ fontSize: 11 }}
+                  />
                   <Tooltip
-                    contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 12 }}
-                    formatter={(value, name) => {
-                      if (name === "Sentimento") return [`${(value * 100).toFixed(1)}%`, name];
-                      if (name === "Variação Preço") return [`${value > 0 ? "+" : ""}${value.toFixed(3)}%`, name];
-                      return [value, name];
-                    }}
-                    labelFormatter={(label) => `Hora: ${label}`}
+                    contentStyle={tooltipStyle}
+                    formatter={(valor, nome) =>
+                      nome === "Sentiment Score"
+                        ? [Number(valor).toFixed(3), nome]
+                        : [percentual(valor, 3), nome]
+                    }
+                    labelFormatter={(l) => `Hora (UTC): ${l}`}
                   />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <ReferenceLine yAxisId="sent" y={0.5} stroke="#eab308" strokeDasharray="3 3" />
-                  <ReferenceLine yAxisId="preco" y={0} stroke="#64748b" strokeDasharray="3 3" />
-                  <Bar yAxisId="sent" dataKey="sentimento_medio" name="Sentimento" radius={[4, 4, 0, 0]} maxBarSize={30}>
-                    {correlacao.pontos.map((entry, index) => {
-                      const val = entry.sentimento_medio;
-                      const color = val > 0.6 ? "#a78bfa" : val < 0.4 ? "#f472b6" : "#fbbf24";
-                      return <Cell key={`cs-${index}`} fill={color} fillOpacity={0.7} />;
-                    })}
+                  <ReferenceLine yAxisId="sent" y={0} stroke="#64748b" strokeDasharray="3 3" />
+                  <Bar
+                    yAxisId="sent"
+                    dataKey="sentiment_score"
+                    name="Sentiment Score"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={30}
+                  >
+                    {correlacao.pontos.map((p, i) => (
+                      <Cell
+                        key={`cs-${i}`}
+                        fill={
+                          p.sentiment_score > 0
+                            ? "#a78bfa"
+                            : p.sentiment_score < 0
+                              ? "#f472b6"
+                              : "#fbbf24"
+                        }
+                        fillOpacity={0.75}
+                      />
+                    ))}
                   </Bar>
-                  <Bar yAxisId="preco" dataKey="variacao_preco" name="Variação Preço" radius={[4, 4, 0, 0]} maxBarSize={30}>
-                    {correlacao.pontos.map((entry, index) => {
-                      const v = entry.variacao_preco;
-                      const color = v > 0 ? "#22c55e" : v < 0 ? "#ef4444" : "#64748b";
-                      return <Cell key={`cp-${index}`} fill={color} fillOpacity={0.7} />;
-                    })}
+                  <Bar
+                    yAxisId="preco"
+                    dataKey="variacao_preco"
+                    name="Variação Preço"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={30}
+                  >
+                    {correlacao.pontos.map((p, i) => (
+                      <Cell
+                        key={`cp-${i}`}
+                        fill={
+                          p.variacao_preco > 0
+                            ? "#22c55e"
+                            : p.variacao_preco < 0
+                              ? "#ef4444"
+                              : "#64748b"
+                        }
+                        fillOpacity={0.75}
+                      />
+                    ))}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
-            {/* Tabela detalhada */}
             <div className="corr-table-wrapper">
               <table className="corr-table">
                 <thead>
                   <tr>
-                    <th>Hora</th>
-                    <th>Sentimento</th>
+                    <th>Hora (UTC)</th>
+                    <th>Score</th>
+                    <th>Posts</th>
                     <th>Direção Sent.</th>
                     <th>Var. Preço</th>
-                    <th>Direção Preço</th>
+                    <th>Ret. 1h</th>
+                    <th>Ret. 4h</th>
                     <th>Resultado</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {correlacao.pontos.map((p, i) => (
-                    <tr key={i} className={p.acertou === true ? "corr-row--ok" : p.acertou === false ? "corr-row--fail" : ""}>
+                  {correlacao.pontos.map((p) => (
+                    <tr
+                      key={p.timestamp}
+                      className={
+                        p.acertou === true
+                          ? "corr-row--ok"
+                          : p.acertou === false
+                            ? "corr-row--fail"
+                            : ""
+                      }
+                    >
                       <td>{p.hora}</td>
-                      <td>{(p.sentimento_medio * 100).toFixed(1)}%</td>
+                      <td>{p.sentiment_score.toFixed(2)}</td>
+                      <td>
+                        {p.total}{" "}
+                        <span className="corr-mini">
+                          ({p.positivos}+/{p.negativos}−)
+                        </span>
+                      </td>
                       <td>
                         <span className={`corr-dir corr-dir--${p.sentimento_direcao}`}>
-                          {p.sentimento_direcao === "positivo" ? "▲ Positivo" : p.sentimento_direcao === "negativo" ? "▼ Negativo" : "● Neutro"}
+                          {p.sentimento_direcao === "positivo"
+                            ? "▲ Positivo"
+                            : p.sentimento_direcao === "negativo"
+                              ? "▼ Negativo"
+                              : "● Neutro"}
                         </span>
                       </td>
-                      <td>{p.variacao_preco != null ? `${p.variacao_preco > 0 ? "+" : ""}${p.variacao_preco.toFixed(3)}%` : "—"}</td>
+                      <td>{percentual(p.variacao_preco, 3)}</td>
+                      <td>{percentual(p.retorno_1h, 3)}</td>
+                      <td>{percentual(p.retorno_4h, 3)}</td>
                       <td>
-                        <span className={`corr-dir corr-dir--${p.preco_direcao === "subiu" ? "positivo" : p.preco_direcao === "desceu" ? "negativo" : "neutro"}`}>
-                          {p.preco_direcao === "subiu" ? "▲ Subiu" : p.preco_direcao === "desceu" ? "▼ Desceu" : p.preco_direcao === "estável" ? "● Estável" : "—"}
-                        </span>
-                      </td>
-                      <td>
-                        {p.acertou === true && <span className="corr-badge corr-badge--ok">✓ Acerto</span>}
-                        {p.acertou === false && <span className="corr-badge corr-badge--fail">✗ Erro</span>}
-                        {p.acertou == null && <span className="corr-badge corr-badge--na">—</span>}
+                        {p.acertou === true && (
+                          <span className="corr-badge corr-badge--ok">✓ Acerto</span>
+                        )}
+                        {p.acertou === false && (
+                          <span className="corr-badge corr-badge--fail">✗ Erro</span>
+                        )}
+                        {p.acertou == null && (
+                          <span className="corr-badge corr-badge--na">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -826,8 +1066,12 @@ function App() {
         {/* AÇÕES DE COLETA */}
         {fonte === "reddit" && (
           <section className="action-bar">
-            <button className="btn btn-primary" onClick={coletarReddit} disabled={coletando}>
-              {coletando ? "Coletando..." : "\uD83D\uDD34 Coletar Reddit agora"}
+            <button
+              className="btn btn-primary"
+              onClick={() => executarColeta("reddit")}
+              disabled={coletando}
+            >
+              {coletando ? "Coletando..." : "🔴 Coletar Reddit agora"}
             </button>
             <span className="action-hint">
               Subreddits: {(SUBREDDITS_DEFAULT[moeda] || []).join(", ")}
@@ -838,8 +1082,11 @@ function App() {
         {fonte === "x" && (
           <section className="action-bar action-bar--col">
             <div className="input-group">
-              <label>Perfis do X (separados por vírgula):</label>
+              <label htmlFor="perfis-x">
+                Perfis do X (separados por vírgula):
+              </label>
               <input
+                id="perfis-x"
                 className="input"
                 type="text"
                 value={perfisX}
@@ -848,43 +1095,52 @@ function App() {
               />
             </div>
             <div className="input-group input-group--inline">
-              <label>Coleta automática:</label>
+              <label htmlFor="auto-coleta">Coleta automática:</label>
               <select
+                id="auto-coleta"
                 className="input input--select"
                 value={autoCollectInterval}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  setAutoCollectInterval(val);
-                  localStorage.setItem("sentcrypto_autoCollect", String(val));
-                }}
+                onChange={(e) =>
+                  setAutoCollectInterval(parseInt(e.target.value, 10))
+                }
               >
-                <option value={0}>Desativada</option>
-                <option value={1}>A cada 1 min</option>
-                <option value={3}>A cada 3 min</option>
-                <option value={5}>A cada 5 min</option>
-                <option value={10}>A cada 10 min</option>
-                <option value={15}>A cada 15 min</option>
-                <option value={30}>A cada 30 min</option>
+                {INTERVALOS_COLETA.map(({ valor, rotulo }) => (
+                  <option key={valor} value={valor}>
+                    {rotulo}
+                  </option>
+                ))}
               </select>
               {autoCollectInterval > 0 && (
-                <span className="auto-collect-badge">\u23F1 Ativa ({autoCollectInterval}min)</span>
+                <span className="auto-collect-badge">
+                  {"⏱"} Ativa ({autoCollectInterval} min)
+                </span>
               )}
             </div>
             <div className="btn-row">
-              <button className="btn btn-primary" disabled={feedLoading} onClick={carregarFeedX}>
-                {feedLoading ? "Carregando..." : "\uD83D\uDC26 Carregar Feed"}
+              <button
+                className="btn btn-primary"
+                disabled={feedLoading}
+                onClick={carregarFeedX}
+              >
+                {feedLoading ? "Carregando..." : "🐦 Carregar Feed"}
               </button>
-              <button className="btn btn-secondary" onClick={coletarX} disabled={coletando}>
-                {coletando ? "Analisando..." : "\uD83E\uDDE0 Analisar e salvar"}
+              <button
+                className="btn btn-secondary"
+                onClick={() => executarColeta("x")}
+                disabled={coletando}
+              >
+                {coletando ? "Analisando..." : "🧠 Analisar e salvar"}
               </button>
             </div>
           </section>
         )}
 
-        {/* AN\u00C1LISE DE TEXTO LIVRE */}
+        {/* ANÁLISE DE TEXTO LIVRE */}
         <section className="analise-section">
           <h2>{"\u{1F9E0}"} Análise de Texto Livre</h2>
-          <p className="analise-desc">Cole qualquer texto e o modelo BERT vai analisar o sentimento.</p>
+          <p className="analise-desc">
+            Cole qualquer texto e o modelo BERT vai analisar o sentimento.
+          </p>
           <div className="analise-box">
             <textarea
               className="textarea"
@@ -892,19 +1148,39 @@ function App() {
               onChange={(e) => setTextoAnalise(e.target.value)}
               placeholder="Cole aqui uma notícia, tweet, comentário do Reddit..."
               rows={4}
+              maxLength={10000}
             />
-            <button className="btn btn-primary" onClick={analisarTexto} disabled={analisando || !textoAnalise.trim()}>
+            <button
+              className="btn btn-primary"
+              onClick={analisarTexto}
+              disabled={analisando || !textoAnalise.trim()}
+            >
               {analisando ? "Analisando..." : "Analisar com BERT"}
             </button>
             {resultadoAnalise && (
               <div className="analise-result">
-                <div className="analise-badge" style={{ backgroundColor: corSent(resultadoAnalise.sentimento) }}>
+                <div
+                  className="analise-badge"
+                  style={{ backgroundColor: corSent(resultadoAnalise.sentimento) }}
+                >
                   {resultadoAnalise.sentimento}
                 </div>
                 <div className="analise-stats">
-                  <span>Índice: <strong>{resultadoAnalise.indice}</strong></span>
-                  <span>Score BERT: <strong>{resultadoAnalise.score_bert}</strong></span>
-                  <span>Label: <strong>{resultadoAnalise.label_bert}</strong></span>
+                  <span>
+                    Índice: <strong>{resultadoAnalise.indice}</strong>
+                  </span>
+                  <span>
+                    Score BERT: <strong>{resultadoAnalise.score_bert}</strong>
+                  </span>
+                  <span>
+                    Label: <strong>{resultadoAnalise.label_bert}</strong>
+                  </span>
+                  <span>
+                    Cripto:{" "}
+                    <strong>
+                      {resultadoAnalise.crypto_relevante ? "sim" : "não"}
+                    </strong>
+                  </span>
                 </div>
               </div>
             )}
@@ -932,12 +1208,12 @@ function App() {
                       )}
                     </div>
                     <div className="tweet-meta">
-                      <span className="tweet-name">{tw.nome_exibicao || tw.perfil}</span>
+                      <span className="tweet-name">
+                        {tw.nome_exibicao || tw.perfil}
+                      </span>
                       <span className="tweet-handle">{tw.perfil}</span>
                       <span className="tweet-dot">·</span>
-                      <span className="tweet-time">
-                        {new Date(tw.timestamp).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                      </span>
+                      <span className="tweet-time">{dataCurta(tw.timestamp)}</span>
                     </div>
                   </div>
                   <p className="tweet-text">{tw.texto}</p>
@@ -948,8 +1224,13 @@ function App() {
                       <span title="Curtidas">❤️ {tw.likes}</span>
                     </div>
                     {tw.sentimento && (
-                      <span className="tweet-sentiment" style={{ backgroundColor: corSent(tw.sentimento) }}>
-                        {tw.sentimento === "nulo" ? "não-crypto" : `${tw.sentimento} (${tw.score_bert})`}
+                      <span
+                        className="tweet-sentiment"
+                        style={{ backgroundColor: corSent(tw.sentimento) }}
+                      >
+                        {tw.sentimento === "nulo"
+                          ? "não-cripto"
+                          : `${tw.sentimento} (${tw.score_bert})`}
                       </span>
                     )}
                   </div>
@@ -960,27 +1241,56 @@ function App() {
         )}
       </main>
 
-      {/* TWITTER LOGIN MODAL */}
+      {/* MODAL DE LOGIN DO X */}
       {showLoginModal && (
         <div className="modal-overlay" onClick={() => setShowLoginModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{"\u{1F426}"} Configurar Twitter</h3>
             <p className="modal-desc">
-              Para coletar tweets, forneça cookies de autenticação do Twitter:
+              Para coletar tweets, forneça os cookies de autenticação do X:
             </p>
             <ol className="modal-steps">
-              <li>Abra <strong>x.com</strong> no Chrome e faça login</li>
-              <li>Pressione <strong>F12</strong> → aba <strong>Application</strong></li>
-              <li>Menu lateral: <strong>Cookies → https://x.com</strong></li>
-              <li>Copie <strong>auth_token</strong> e <strong>ct0</strong></li>
+              <li>
+                Abra <strong>x.com</strong> no Chrome e faça login
+              </li>
+              <li>
+                Pressione <strong>F12</strong> → aba <strong>Application</strong>
+              </li>
+              <li>
+                Menu lateral: <strong>Cookies → https://x.com</strong>
+              </li>
+              <li>
+                Copie <strong>auth_token</strong> e <strong>ct0</strong>
+              </li>
             </ol>
             <div className="modal-inputs">
-              <input className="input" placeholder="auth_token" value={loginAuthToken} onChange={(e) => setLoginAuthToken(e.target.value)} />
-              <input className="input" placeholder="ct0" value={loginCt0} onChange={(e) => setLoginCt0(e.target.value)} />
+              <input
+                className="input"
+                placeholder="auth_token"
+                value={loginAuthToken}
+                onChange={(e) => setLoginAuthToken(e.target.value)}
+              />
+              <input
+                className="input"
+                placeholder="ct0"
+                value={loginCt0}
+                onChange={(e) => setLoginCt0(e.target.value)}
+              />
             </div>
             <div className="modal-actions">
-              <button className="btn btn-primary" onClick={salvarCookiesTwitter} disabled={!loginAuthToken || !loginCt0}>Salvar cookies</button>
-              <button className="btn btn-ghost" onClick={() => setShowLoginModal(false)}>Cancelar</button>
+              <button
+                className="btn btn-primary"
+                onClick={salvarCookiesTwitter}
+                disabled={!loginAuthToken || !loginCt0 || salvandoLogin}
+              >
+                {salvandoLogin ? "Salvando..." : "Salvar cookies"}
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowLoginModal(false)}
+              >
+                Cancelar
+              </button>
             </div>
           </div>
         </div>

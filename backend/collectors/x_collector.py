@@ -1,12 +1,12 @@
-"""
-Collector do X (Twitter) — SentCrypto.
+"""Coleta de tweets do X (Twitter) — SentCrypto.
 
 Ordem de tentativa (mais confiável primeiro):
   1. twikit com cookies do navegador (robusto, sem API paga)
   2. Syndication endpoint (público, sem auth — frágil mas funciona)
   3. Twitter API v2 (Bearer Token — requer plano Basic+)
 
-Inclui cache TTL para evitar rate limit.
+Inclui cache com TTL para não estourar o rate limit do X durante a coleta
+automática do dashboard.
 """
 
 import json
@@ -15,15 +15,14 @@ import os
 import re
 import time as _time
 from datetime import datetime, timezone
-from typing import List, Dict
+from typing import Dict, List
 from urllib.parse import unquote
 
 import requests as req
-from dotenv import load_dotenv
 
-from collectors.cookie_auth import cookies_validos, COOKIES_PATH
-
-load_dotenv()
+from collectors.cookie_auth import COOKIES_PATH, cookies_validos
+from config import X_CACHE_TTL
+from utils.moedas import texto_menciona_moeda
 
 logger = logging.getLogger("sentcrypto.x")
 
@@ -35,49 +34,48 @@ _BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
 
-# Cache simples: {username: (timestamp, [tweets])}
+# Cache: {username: (momento_da_coleta, quantidade_pedida, [tweets])}
 _CACHE: Dict[str, tuple] = {}
-_CACHE_TTL = 300  # 5 minutos
-
-MAPA_NOMES = {
-    "BTC": ["BITCOIN"],
-    "ETH": ["ETHEREUM", "ETHER"],
-    "SOL": ["SOLANA"],
-    "DOGE": ["DOGECOIN"],
-    "XRP": ["RIPPLE"],
-    "ADA": ["CARDANO"],
-    "MATIC": ["POLYGON"],
-    "DOT": ["POLKADOT"],
-    "AVAX": ["AVALANCHE"],
-    "LINK": ["CHAINLINK"],
-}
 
 
 # ── Helpers de timestamp ────────────────────────────────────────────────────
 
 
+def _agora_utc_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _para_utc_naive(dt: datetime) -> datetime:
+    """Normaliza para UTC sem tzinfo — convenção de todo o projeto."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _parse_ts_twitter(ts_str: str) -> datetime:
-    """Parse timestamp clássico: 'Thu Feb 26 16:45:47 +0000 2026'."""
+    """Parse do formato clássico: 'Thu Feb 26 16:45:47 +0000 2026'."""
     if not ts_str:
-        return datetime.now(timezone.utc)
+        return _agora_utc_naive()
     try:
-        return datetime.strptime(ts_str, "%a %b %d %H:%M:%S %z %Y")
-    except Exception:
+        return _para_utc_naive(
+            datetime.strptime(ts_str, "%a %b %d %H:%M:%S %z %Y")
+        )
+    except ValueError:
         pass
-    try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except Exception:
-        return datetime.now(timezone.utc)
+    return _parse_ts_iso(ts_str)
 
 
 def _parse_ts_iso(ts_str: str) -> datetime:
-    """Parse ISO timestamp."""
+    """Parse de timestamp ISO 8601."""
     if not ts_str:
-        return datetime.now(timezone.utc)
+        return _agora_utc_naive()
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    except Exception:
-        return datetime.now(timezone.utc)
+        return _para_utc_naive(
+            datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        )
+    except (ValueError, TypeError):
+        logger.debug("Timestamp não reconhecido: %r", ts_str)
+        return _agora_utc_naive()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -86,14 +84,10 @@ def _parse_ts_iso(ts_str: str) -> datetime:
 
 
 def _coletar_perfil_twikit(username: str, limite: int = 30) -> List[Dict]:
-    """
-    Coleta tweets via twikit usando cookies extraídos do navegador.
-    Método mais confiável - não precisa de API paga.
-    """
+    """Coleta tweets via twikit usando os cookies extraídos do navegador."""
     if not cookies_validos():
         raise FileNotFoundError(
-            "Cookies do Twitter não encontrados. "
-            "Execute o setup de login primeiro."
+            "Cookies do X não encontrados. Configure em /login/x."
         )
 
     import asyncio
@@ -114,19 +108,17 @@ def _coletar_perfil_twikit(username: str, limite: int = 30) -> List[Dict]:
             texto = (tweet.text or "").strip()
             if not texto:
                 continue
-            ts = (
-                _parse_ts_twitter(tweet.created_at)
-                if tweet.created_at
-                else datetime.now(timezone.utc)
-            )
             resultados.append(
                 {
                     "texto": texto,
-                    "timestamp_post": ts.isoformat(),
+                    "timestamp_post": _parse_ts_twitter(tweet.created_at),
                     "perfil": f"@{username}",
                     "nome_exibicao": user.name or username,
                     "avatar": getattr(user, "profile_image_url", None),
-                    "tweet_id": tweet.id,
+                    "tweet_id": str(tweet.id) if tweet.id else None,
+                    "url": f"https://x.com/{username}/status/{tweet.id}"
+                    if tweet.id
+                    else None,
                     "likes": getattr(tweet, "favorite_count", 0) or 0,
                     "retweets": getattr(tweet, "retweet_count", 0) or 0,
                     "replies": getattr(tweet, "reply_count", 0) or 0,
@@ -134,7 +126,16 @@ def _coletar_perfil_twikit(username: str, limite: int = 30) -> List[Dict]:
             )
         return resultados
 
-    return asyncio.run(_fetch())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_fetch())
+
+    # Já existe um event loop nesta thread (caso do FastAPI): rodar
+    # asyncio.run() aqui levantaria RuntimeError.
+    raise RuntimeError(
+        "twikit não pode ser chamado de dentro de um event loop ativo."
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -143,7 +144,7 @@ def _coletar_perfil_twikit(username: str, limite: int = 30) -> List[Dict]:
 
 
 def _fetch_syndication_html(url: str) -> str:
-    """Busca HTML do syndication usando curl + fallback requests."""
+    """Busca o HTML do syndication usando curl, com fallback para requests."""
     import subprocess
 
     try:
@@ -154,52 +155,49 @@ def _fetch_syndication_html(url: str) -> str:
         )
         if result.returncode == 0 and result.stdout and len(result.stdout) > 1000:
             return result.stdout.decode("utf-8", errors="replace")
-        if not result.stdout or len(result.stdout) < 100:
-            raise RuntimeError("curl retornou resposta vazia ou rate limited")
-    except FileNotFoundError:
-        pass  # curl não instalado
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("curl indisponível/falhou (%s); usando requests.", e)
 
     session = req.Session()
-    session.headers.update(
-        {
-            "User-Agent": _BROWSER_UA,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
-            "Connection": "close",
-        }
-    )
-    resp = session.get(url, timeout=25)
-    session.close()
-
-    if resp.status_code == 429:
-        raise RuntimeError("Rate limit (429)")
-    resp.raise_for_status()
-    return resp.text
+    try:
+        session.headers.update(
+            {
+                "User-Agent": _BROWSER_UA,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
+                "Connection": "close",
+            }
+        )
+        resp = session.get(url, timeout=25)
+        if resp.status_code == 429:
+            raise RuntimeError("Rate limit do X (HTTP 429)")
+        resp.raise_for_status()
+        return resp.text
+    finally:
+        session.close()
 
 
 def _coletar_via_syndication(username: str, limite: int = 30) -> List[Dict]:
-    """Scrape de tweets via syndication.twitter.com."""
-    url = f"{SYNDICATION_URL}/{username}"
-    html = _fetch_syndication_html(url)
+    """Extrai tweets do HTML público do syndication.twitter.com."""
+    html = _fetch_syndication_html(f"{SYNDICATION_URL}/{username}")
 
     match = re.search(
-        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-        html,
-        re.DOTALL,
+        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
     )
     if not match:
-        raise RuntimeError("Não foi possível encontrar dados no HTML da syndication")
+        raise RuntimeError("Estrutura do syndication mudou: __NEXT_DATA__ ausente")
 
-    data = json.loads(match.group(1))
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON do syndication inválido: {e}") from e
+
     entries = (
         data.get("props", {})
         .get("pageProps", {})
         .get("timeline", {})
         .get("entries", [])
     )
-
-    if not entries:
-        return []
 
     resultados: List[Dict] = []
     for entry in entries:
@@ -215,16 +213,20 @@ def _coletar_via_syndication(username: str, limite: int = 30) -> List[Dict]:
             continue
 
         user = tweet.get("user", {})
-        ts = _parse_ts_twitter(tweet.get("created_at", ""))
+        screen_name = user.get("screen_name", username)
+        tweet_id = tweet.get("id_str")
 
         resultados.append(
             {
                 "texto": texto,
-                "timestamp_post": ts.isoformat(),
-                "perfil": f"@{user.get('screen_name', username)}",
+                "timestamp_post": _parse_ts_twitter(tweet.get("created_at", "")),
+                "perfil": f"@{screen_name}",
                 "nome_exibicao": user.get("name", username),
                 "avatar": user.get("profile_image_url_https"),
-                "tweet_id": tweet.get("id_str"),
+                "tweet_id": tweet_id,
+                "url": f"https://x.com/{screen_name}/status/{tweet_id}"
+                if tweet_id
+                else None,
                 "likes": tweet.get("favorite_count", 0) or 0,
                 "retweets": tweet.get("retweet_count", 0) or 0,
                 "replies": tweet.get("reply_count", 0) or 0,
@@ -243,15 +245,17 @@ def _coletar_via_syndication(username: str, limite: int = 30) -> List[Dict]:
 
 
 def _bearer_headers() -> dict:
-    token = os.getenv("TWITTER_BEARER_TOKEN", "")
+    token = os.getenv("TWITTER_BEARER_TOKEN", "").strip()
     if not token:
         return {}
-    token = unquote(token)
-    return {"Authorization": f"Bearer {token}", "User-Agent": "SentCryptoApp/1.0"}
+    return {
+        "Authorization": f"Bearer {unquote(token)}",
+        "User-Agent": "SentCryptoApp/1.0",
+    }
 
 
 def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
-    """Coleta tweets via Twitter API v2 (requer plano Basic ou superior)."""
+    """Coleta via API oficial v2 (requer plano pago)."""
     headers = _bearer_headers()
     if not headers:
         raise RuntimeError("TWITTER_BEARER_TOKEN não configurado")
@@ -262,8 +266,11 @@ def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
         params={"user.fields": "name,profile_image_url"},
         timeout=15,
     )
-    if user_resp.status_code in (402, 403):
-        raise PermissionError(f"Acesso negado pela API v2 ({user_resp.status_code})")
+    if user_resp.status_code in (401, 402, 403):
+        raise PermissionError(
+            f"API v2 recusou o acesso (HTTP {user_resp.status_code}). "
+            "O endpoint exige plano Basic ou superior."
+        )
     user_resp.raise_for_status()
 
     user_data = user_resp.json().get("data")
@@ -278,6 +285,7 @@ def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
         f"{TWITTER_API}/users/{user_id}/tweets",
         headers=headers,
         params={
+            # A API v2 exige max_results entre 5 e 100.
             "max_results": min(max(limite, 5), 100),
             "tweet.fields": "created_at,text,public_metrics",
         },
@@ -288,14 +296,18 @@ def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
     resultados: List[Dict] = []
     for tw in tw_resp.json().get("data", []):
         metrics = tw.get("public_metrics", {})
+        tweet_id = tw.get("id")
         resultados.append(
             {
                 "texto": (tw.get("text") or "").strip(),
-                "timestamp_post": _parse_ts_iso(tw.get("created_at", "")).isoformat(),
+                "timestamp_post": _parse_ts_iso(tw.get("created_at", "")),
                 "perfil": f"@{username}",
                 "nome_exibicao": nome,
                 "avatar": avatar,
-                "tweet_id": tw.get("id"),
+                "tweet_id": tweet_id,
+                "url": f"https://x.com/{username}/status/{tweet_id}"
+                if tweet_id
+                else None,
                 "likes": metrics.get("like_count", 0),
                 "retweets": metrics.get("retweet_count", 0),
                 "replies": metrics.get("reply_count", 0),
@@ -311,77 +323,73 @@ def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
 
 
 def _coletar_perfil(username: str, limite: int = 30) -> List[Dict]:
-    """Tenta os 3 métodos em ordem de confiabilidade. Usa cache TTL."""
-
-    # Verifica cache
+    """Tenta os três métodos em ordem de confiabilidade, com cache por TTL."""
     cache_key = username.lower()
-    if cache_key in _CACHE:
-        cached_ts, cached_tweets = _CACHE[cache_key]
-        if _time.time() - cached_ts < _CACHE_TTL:
-            logger.info("[cache] %d tweets de @%s", len(cached_tweets), username)
-            return cached_tweets[:limite]
 
-    tweets: List[Dict] = []
+    entrada = _CACHE.get(cache_key)
+    if entrada:
+        momento, qtd_pedida, tweets_cache = entrada
+        # O cache só serve se cobrir a quantidade pedida agora. Antes ele
+        # devolvia `tweets[:limite]` mesmo quando guardava menos tweets do que
+        # o novo pedido, retornando silenciosamente menos do que o solicitado.
+        if _time.time() - momento < X_CACHE_TTL and qtd_pedida >= limite:
+            logger.info("[cache] %d tweets de @%s", len(tweets_cache), username)
+            return tweets_cache[:limite]
 
-    # 1 — twikit com cookies (mais confiável, sem API paga)
-    if not tweets:
+    metodos = (
+        ("twikit", _coletar_perfil_twikit),
+        ("syndication", _coletar_via_syndication),
+        ("api-v2", _coletar_perfil_api),
+    )
+
+    for nome, metodo in metodos:
         try:
-            tweets = _coletar_perfil_twikit(username, limite)
-            if tweets:
-                logger.info("[twikit] %d tweets de @%s", len(tweets), username)
+            tweets = metodo(username, limite)
         except Exception as e:
-            logger.warning("[twikit] falhou para @%s: %s", username, e)
+            logger.warning("[%s] falhou para @%s: %s", nome, username, e)
+            continue
 
-    # 2 — Syndication (público, sem auth — frágil)
-    if not tweets:
-        try:
-            tweets = _coletar_via_syndication(username, limite)
-            if tweets:
-                logger.info("[syndication] %d tweets de @%s", len(tweets), username)
-        except Exception as e:
-            logger.warning("[syndication] falhou para @%s: %s", username, e)
+        if tweets:
+            logger.info("[%s] %d tweets de @%s", nome, len(tweets), username)
+            _CACHE[cache_key] = (_time.time(), limite, tweets)
+            return tweets
 
-    # 3 — API v2 (requer Bearer Token + plano pago)
-    if not tweets:
-        try:
-            tweets = _coletar_perfil_api(username, limite)
-            if tweets:
-                logger.info("[api-v2] %d tweets de @%s", len(tweets), username)
-        except Exception as e:
-            logger.warning("[api-v2] falhou para @%s: %s", username, e)
-
-    # Salva no cache se teve resultado
-    if tweets:
-        _CACHE[cache_key] = (_time.time(), tweets)
-
-    return tweets
+    return []
 
 
-def coletar_feed_x(
-    perfis: List[str],
-    limite_por_perfil: int = 30,
-) -> List[Dict]:
-    """
-    Coleta feed completo de perfis do X (sem filtro de moeda).
-    Retorna todos os tweets encontrados, ordenados por data.
+def limpar_cache() -> None:
+    """Descarta o cache — útil ao trocar de conta ou forçar recoleta."""
+    _CACHE.clear()
+
+
+def coletar_feed_x(perfis: List[str], limite_por_perfil: int = 30) -> List[Dict]:
+    """Coleta a timeline dos perfis, sem filtrar por moeda.
+
+    Levanta ``RuntimeError`` apenas se nenhum perfil retornar nada — falha
+    parcial é registrada em log e não impede o restante da coleta.
     """
     todos: List[Dict] = []
-    erros: List[str] = []
+    falharam: List[str] = []
 
     for perfil in perfis:
         username = perfil.lstrip("@").strip()
         if not username:
             continue
+
         tweets = _coletar_perfil(username, limite_por_perfil)
         if tweets:
             todos.extend(tweets)
         else:
-            erros.append(username)
+            falharam.append(username)
 
-    if not todos and erros:
+    if falharam:
+        logger.warning("Perfis sem resultado: %s", ", ".join(falharam))
+
+    if not todos and falharam:
         raise RuntimeError(
-            f"Não foi possível coletar tweets dos perfis: {', '.join(erros)}. "
-            "Verifique se os perfis existem e são públicos."
+            f"Não foi possível coletar tweets de: {', '.join(falharam)}. "
+            "Verifique se os perfis existem, são públicos e se os cookies do X "
+            "estão configurados."
         )
 
     todos.sort(key=lambda t: t["timestamp_post"], reverse=True)
@@ -393,29 +401,7 @@ def coletar_tweets_x(
     moeda: str = "BTC",
     limite_por_perfil: int = 20,
 ) -> List[Dict]:
-    """
-    Coleta tweets de perfis e filtra por menções à moeda.
-    Retorna apenas tweets relevantes para a moeda escolhida.
-    """
-    moeda_u = moeda.upper()
-    termos = [moeda_u, f"${moeda_u}"] + MAPA_NOMES.get(moeda_u, [])
-
+    """Coleta tweets dos perfis e mantém apenas os que citam a moeda."""
     todos = coletar_feed_x(perfis, limite_por_perfil)
 
-    filtrados = []
-    for tw in todos:
-        texto_upper = tw["texto"].upper()
-        if any(t in texto_upper for t in termos):
-            ts = tw["timestamp_post"]
-            if isinstance(ts, str):
-                ts = _parse_ts_iso(ts)
-            filtrados.append(
-                {
-                    "texto": tw["texto"],
-                    "timestamp_post": ts,
-                    "perfil": tw["perfil"],
-                    "tweet_id": tw.get("tweet_id"),
-                }
-            )
-
-    return filtrados
+    return [tw for tw in todos if texto_menciona_moeda(tw["texto"], moeda)]
