@@ -155,6 +155,39 @@ A documentação interativa da API fica em <http://127.0.0.1:8000/docs>.
 
 ---
 
+## Credenciais do Reddit
+
+Sem credenciais, a coleta usa os endpoints públicos — que o Reddit limita por
+IP e hoje recusa com **HTTP 403** na maioria das tentativas. Com um app
+registrado, a coleta passa a usar OAuth (~100 requisições por minuto).
+
+Leva dois minutos:
+
+1. Acesse <https://www.reddit.com/prefs/apps> logado
+2. Clique em **"are you a developer? create an app..."**
+3. Preencha — o tipo **precisa** ser `script`:
+
+   | Campo | Valor |
+   |-------|-------|
+   | name | `sentcrypto-tcc` |
+   | tipo | **script** |
+   | redirect uri | `http://localhost:8000` |
+
+4. Clique em **create app**
+5. No `backend/.env`:
+
+   ```bash
+   REDDIT_CLIENT_ID=<sequência sob o nome do app, à esquerda>
+   REDDIT_CLIENT_SECRET=<campo "secret">
+   REDDIT_USER_AGENT=python:sentcrypto-tcc:1.0 (by /u/seu_usuario)
+   ```
+
+Confira em <http://127.0.0.1:8000/status/reddit> — deve responder
+`"modo": "oauth"`. Se as credenciais estiverem erradas, o sistema registra o
+erro e volta ao modo anônimo em vez de falhar.
+
+---
+
 ## Coleta contínua
 
 O botão de coleta automática do dashboard depende do navegador: ele só roda
@@ -340,9 +373,11 @@ avaliações, não pessimismo real do mercado.
    expiram e de endpoints não oficiais que podem mudar sem aviso. As três
    estratégias em cascata mitigam, mas não eliminam o problema.
 
-4. **Coleta do Reddit sujeita a bloqueio.** O acesso anônimo aos endpoints JSON
-   é limitado por IP e pode retornar HTTP 403. Nesse caso a API informa o
-   motivo. Uso contínuo exigiria registrar um app e autenticar via OAuth.
+4. **Coleta do Reddit exige credenciais.** O acesso anônimo é limitado por IP
+   e hoje retorna HTTP 403 na maioria das tentativas — na prática, o modo
+   anônimo não sustenta coleta contínua. Registre um app e preencha
+   `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (veja
+   [Credenciais do Reddit](#credenciais-do-reddit)).
 
 5. **Correlação não é causalidade.** A taxa de acerto mede coincidência de
    direção, não relação causal. Preço de cripto responde a muitos fatores fora

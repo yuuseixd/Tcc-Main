@@ -84,6 +84,25 @@ INDICE_POSITIVO = _env_float("INDICE_POSITIVO", 0.8)
 # ── Coleta do X ─────────────────────────────────────────────────────────────
 X_CACHE_TTL = _env_int("X_CACHE_TTL", 300)
 
+# ── Coleta do Reddit ────────────────────────────────────────────────────────
+# Sem credenciais, o coletor usa os endpoints JSON públicos — que o Reddit
+# limita por IP e frequentemente recusa com HTTP 403. Com um app registrado
+# em https://www.reddit.com/prefs/apps (tipo "script"), a coleta passa a usar
+# OAuth, com limite muito mais alto e estável.
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "").strip()
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+
+# O Reddit exige um User-Agent descritivo e bloqueia os genéricos.
+# Formato recomendado: <plataforma>:<id do app>:<versão> (by /u/<usuário>)
+REDDIT_USER_AGENT = os.getenv(
+    "REDDIT_USER_AGENT", "python:sentcrypto-tcc:1.0 (by /u/unknown)"
+)
+
+
+def reddit_autenticado() -> bool:
+    """Diz se há credenciais suficientes para usar OAuth."""
+    return bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET)
+
 # ── Visualização ────────────────────────────────────────────────────────────
 # Sem filtro de data, o histórico social mostra apenas esta janela (em dias)
 # contada a partir do post mais recente. Evita que tweets antigos fixados

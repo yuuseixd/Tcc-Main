@@ -31,6 +31,7 @@ from config import (
     DIAS_JANELA_PADRAO,
     MOEDAS_SUPORTADAS,
     RELATORIOS_DIR,
+    reddit_autenticado,
 )
 from db import Base, engine, get_db
 from models import MarketPoint, SocialPost
@@ -159,7 +160,25 @@ def health_check():
         "versao": app.version,
         "bert_carregado": svc_sentimento.modelo_carregado(),
         "twitter_cookies": cookies_validos(),
+        "reddit_oauth": reddit_autenticado(),
         "moedas_suportadas": MOEDAS_SUPORTADAS,
+    }
+
+
+@app.get("/status/reddit", tags=["health"])
+def reddit_status():
+    """Diz se a coleta do Reddit usará OAuth ou o modo anônimo."""
+    autenticado = reddit_autenticado()
+    return {
+        "autenticado": autenticado,
+        "modo": "oauth" if autenticado else "anonimo",
+        "mensagem": (
+            "Credenciais configuradas. A coleta usará OAuth."
+            if autenticado
+            else "Sem credenciais: a coleta usará o modo anônimo, que o Reddit "
+                 "limita por IP e costuma recusar com HTTP 403. Configure "
+                 "REDDIT_CLIENT_ID e REDDIT_CLIENT_SECRET no .env."
+        ),
     }
 
 

@@ -317,6 +317,93 @@ class TestMetricas:
         assert len(svc_correlacao.agregar_posts_por_hora(posts)) == 2
 
 
+# ── Autenticação do Reddit ──────────────────────────────────────────────────
+
+
+class TestRedditOAuth:
+    """A escolha entre OAuth e modo anônimo precisa ser automática."""
+
+    @pytest.fixture(autouse=True)
+    def _limpar(self):
+        from collectors import reddit_collector as rc
+        rc.limpar_token()
+        yield
+        rc.limpar_token()
+
+    def test_sem_credenciais_usa_modo_anonimo(self, monkeypatch):
+        from collectors import reddit_collector as rc
+
+        monkeypatch.setattr(rc, "reddit_autenticado", lambda: False)
+        base, headers = rc._base_e_headers()
+
+        assert base == rc.REDDIT_BASE
+        assert "Authorization" not in headers
+        assert headers["User-Agent"]          # o Reddit recusa UA vazio
+
+    def test_com_credenciais_usa_oauth(self, monkeypatch):
+        from collectors import reddit_collector as rc
+
+        monkeypatch.setattr(rc, "reddit_autenticado", lambda: True)
+        monkeypatch.setattr(rc, "_obter_token", lambda: "token-de-teste")
+
+        base, headers = rc._base_e_headers()
+
+        assert base == rc.REDDIT_OAUTH_BASE
+        assert headers["Authorization"] == "Bearer token-de-teste"
+
+    def test_token_e_reaproveitado_enquanto_valido(self, monkeypatch):
+        """Pedir token a cada subreddit desperdiçaria o limite de taxa."""
+        from collectors import reddit_collector as rc
+
+        chamadas = {"n": 0}
+
+        class RespostaFake:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                chamadas["n"] += 1
+                return {"access_token": "abc", "expires_in": 3600}
+
+        monkeypatch.setattr(rc, "reddit_autenticado", lambda: True)
+        monkeypatch.setattr(rc.requests, "post", lambda *a, **k: RespostaFake())
+
+        assert rc._obter_token() == "abc"
+        assert rc._obter_token() == "abc"
+        assert chamadas["n"] == 1
+
+    def test_token_expirado_e_renovado(self, monkeypatch):
+        from collectors import reddit_collector as rc
+
+        monkeypatch.setattr(rc, "reddit_autenticado", lambda: True)
+        # Token que já venceu no cache.
+        rc._token_cache = ("velho", 0)
+
+        class RespostaFake:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self): return {"access_token": "novo", "expires_in": 3600}
+
+        monkeypatch.setattr(rc.requests, "post", lambda *a, **k: RespostaFake())
+        assert rc._obter_token() == "novo"
+
+    def test_credenciais_invalidas_nao_derrubam_a_coleta(self, monkeypatch):
+        """Um 401 deve degradar para o modo anônimo, não lançar exceção."""
+        from collectors import reddit_collector as rc
+
+        class RespostaFake:
+            status_code = 401
+            def raise_for_status(self): pass
+            def json(self): return {}
+
+        monkeypatch.setattr(rc, "reddit_autenticado", lambda: True)
+        monkeypatch.setattr(rc.requests, "post", lambda *a, **k: RespostaFake())
+
+        assert rc._obter_token() is None
+        base, headers = rc._base_e_headers()
+        assert base == rc.REDDIT_BASE
+        assert "Authorization" not in headers
+
+
 # ── Candles ─────────────────────────────────────────────────────────────────
 
 
