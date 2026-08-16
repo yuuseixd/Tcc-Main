@@ -258,28 +258,65 @@ No frontend, `REACT_APP_API_URL` define o endereço do backend.
 
 ---
 
+## Comparação de modelos
+
+O projeto inclui um benchmark que roda vários modelos sobre **a mesma base de
+posts e os mesmos preços**, de forma que qualquer diferença venha só do modelo:
+
+```bash
+cd backend
+python tools/benchmark_modelos.py --moeda BTC --fonte X
+```
+
+Resultado com a base atual (109 posts relevantes, BTC/X):
+
+| Modelo | Taxa de acerto | n | IC 95% | p |
+|--------|---------------:|--:|--------|--:|
+| `ProsusAI/finbert` | 50,0% | 24 | [31,4% – 68,6%] | 1,000 |
+| `lucas-leme/FinBERT-PT-BR` | 40,0% | 10 | [16,8% – 68,7%] | 0,754 |
+| `nlptown/...-sentiment` (atual) | 36,7% | 49 | [24,7% – 50,7%] | 0,085 |
+| `cardiffnlp/twitter-xlm-roberta` | 25,0% | 16 | [10,2% – 49,5%] | 0,077 |
+
+**Nenhum modelo difere estatisticamente do acaso** (todos com p > 0,05, e todos
+os intervalos de confiança contendo ou encostando em 50%). Com no máximo 49
+horas comparáveis, a amostra não permite nem distinguir os modelos entre si nem
+afirmar que algum antecipa o preço.
+
+Um ponto que os dados mostram com clareza: o modelo atual rotula **77 dos 109
+posts como negativos (71%)**, enquanto os modelos financeiros classificam a
+maioria como neutro (81 a 87). Para uma timeline dominada por tweets factuais
+(`whale_alert`), 71% de negatividade indica viés sistemático do modelo de
+avaliações, não pessimismo real do mercado.
+
+---
+
 ## Limitações conhecidas
 
 1. **O modelo BERT não é especializado em finanças.**
    `nlptown/bert-base-multilingual-uncased-sentiment` foi treinado em
    avaliações de produtos (1 a 5 estrelas). Em textos financeiros ele erra com
-   frequência — classifica "bitcoin subindo forte" como negativo, com
-   confiança baixa (~0,38). Isso limita a validade dos resultados. Alternativas
-   a avaliar, trocando `BERT_MODEL_NAME`:
-   - `ProsusAI/finbert` — financeiro, em inglês
-   - `cardiffnlp/twitter-xlm-roberta-base-sentiment` — multilíngue, treinado em tweets
-   - `lucas-leme/FinBERT-PT-BR` — financeiro, em português
+   frequência — classifica "bitcoin subindo forte" como negativo, com confiança
+   baixa (~0,38), e rotula 71% da base como negativa. Trocar o modelo é
+   questão de mudar `BERT_MODEL_NAME` no `.env`, mas o benchmark acima mostra
+   que, com a amostra atual, a troca não é sustentada por evidência.
 
-2. **Coleta do X é frágil por natureza.** Depende de cookies de sessão que
+2. **Amostra insuficiente para conclusão estatística.** Este é o limite
+   principal do trabalho hoje. Com ~50 horas comparáveis, o intervalo de
+   confiança da taxa de acerto tem cerca de 26 pontos percentuais de largura.
+   Para reduzi-lo a ±5 pontos seriam necessárias cerca de 400 horas
+   comparáveis — o que significa coletar de forma contínua por várias semanas.
+
+3. **Coleta do X é frágil por natureza.** Depende de cookies de sessão que
    expiram e de endpoints não oficiais que podem mudar sem aviso. As três
    estratégias em cascata mitigam, mas não eliminam o problema.
 
-3. **Correlação não é causalidade.** A taxa de acerto mede coincidência de
+4. **Coleta do Reddit sujeita a bloqueio.** O acesso anônimo aos endpoints JSON
+   é limitado por IP e pode retornar HTTP 403. Nesse caso a API informa o
+   motivo. Uso contínuo exigiria registrar um app e autenticar via OAuth.
+
+5. **Correlação não é causalidade.** A taxa de acerto mede coincidência de
    direção, não relação causal. Preço de cripto responde a muitos fatores fora
    do escopo deste trabalho.
 
-4. **Amostra.** Conclusões exigem volume: colete durante vários dias antes de
-   interpretar os números.
-
-5. **Janela de preço.** A consulta à Binance cobre no máximo 180 dias para trás;
+6. **Janela de preço.** A consulta à Binance cobre no máximo 180 dias para trás;
    posts mais antigos que isso ficam sem preço correspondente.
