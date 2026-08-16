@@ -1238,6 +1238,24 @@ body {
   color: #64748b;
 }
 
+/* Ressalva exibida quando a amostra é pequena demais para conclusão. */
+.corr-aviso {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  background: rgba(234, 179, 8, 0.1);
+  color: #eab308;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Contagem auxiliar de positivos/negativos na tabela de correlação. */
+.corr-mini {
+  color: #64748b;
+  font-size: 11px;
+}
+
 @media (max-width: 600px) {
   .corr-summary {
     grid-template-columns: 1fr;
