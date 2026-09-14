@@ -27,6 +27,24 @@ import {
 
 const MOEDAS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "AVAX", "LINK"];
 
+/** Valores padrão de compra/venda do simulador — usados ao marcar uma nova
+ * moeda; cada moeda pode ajustá-los depois de forma independente. */
+const SIM_DEFAULTS = {
+  capital_inicial: 1000,
+  valor_por_compra: 100,
+  percentual_lucro_venda: 5,
+  percentual_queda_compra: 3,
+  percentual_perda_aceita: 10,
+};
+
+const SIM_CAMPOS = [
+  { chave: "capital_inicial", rotulo: "Capital inicial (USD)", min: "1", step: "1" },
+  { chave: "valor_por_compra", rotulo: "Valor/compra (USD)", min: "1", step: "1" },
+  { chave: "percentual_lucro_venda", rotulo: "% Lucro", min: "0.1", step: "0.1" },
+  { chave: "percentual_queda_compra", rotulo: "% Queda", min: "0.1", step: "0.1" },
+  { chave: "percentual_perda_aceita", rotulo: "% Stop-loss", min: "0.1", step: "0.1" },
+];
+
 const FONTES = {
   api: { label: "Binance (ao vivo)", icon: "\u{1F4CA}" },
   db: { label: "Histórico (SQLite)", icon: "\u{1F4BE}" },
@@ -68,6 +86,24 @@ const listaDePerfis = (texto) =>
 /** Ignora o erro disparado quando cancelamos uma requisição de propósito. */
 const foiCancelada = (e) => e?.name === "AbortError";
 
+/** Cabeçalho clicável para recolher/expandir uma seção (tabelas longas). */
+function CollapseToggle({ aberto, onToggle, rotulo, contagem }) {
+  return (
+    <button
+      type="button"
+      className="collapse-toggle"
+      onClick={onToggle}
+      aria-expanded={aberto}
+    >
+      <span>
+        {rotulo}
+        {contagem != null && ` (${contagem})`}
+      </span>
+      <span className="collapse-toggle__icone">{aberto ? "▲" : "▼"}</span>
+    </button>
+  );
+}
+
 function App() {
   const [moeda, setMoeda] = useState("BTC");
   const [fonte, setFonte] = useState("api");
@@ -85,6 +121,46 @@ function App() {
       localStorage.getItem("sentcrypto_perfisX") ||
       "whale_alert, cabortopcripto",
   );
+  const [feedDataInicio, setFeedDataInicio] = useState("");
+  const [feedDataFim, setFeedDataFim] = useState("");
+
+  // ── Simulador de investimento ─────────────────────────────────────
+  // Moedas simuladas de forma independente da moeda global do dashboard —
+  // o usuário pode comparar várias de uma vez.
+  // "fomo": compra depende do sentimento dos tweets já coletados;
+  // "flat": ignora sentimento, compra/vende só pela variação de preço.
+  const [simModo, setSimModo] = useState("fomo");
+  const [simMoedas, setSimMoedas] = useState(() => ["BTC"]);
+  const [simDataInicio, setSimDataInicio] = useState("");
+  const [simDataFim, setSimDataFim] = useState("");
+  // Capital/valor/percentuais são configuráveis por moeda — cada uma pode
+  // ter sua própria estratégia. { [moeda]: { capital_inicial, ... } }.
+  const [simParamsPorMoeda, setSimParamsPorMoeda] = useState(() => ({
+    BTC: { ...SIM_DEFAULTS },
+  }));
+  const [simulando, setSimulando] = useState(false);
+  // { [moeda]: resultado } — uma simulação independente por moeda marcada.
+  const [simResultados, setSimResultados] = useState(null);
+
+  const paramsDaMoeda = (m) => simParamsPorMoeda[m] || SIM_DEFAULTS;
+
+  const alternarSimMoeda = (m) => {
+    setSimMoedas((atual) =>
+      atual.includes(m) ? atual.filter((x) => x !== m) : [...atual, m],
+    );
+    // Ao marcar uma moeda nova, já dá pra editar seus parâmetros; se ela já
+    // tinha valores de uma marcação anterior, mantém (evita perder ajustes
+    // ao desmarcar/remarcar sem querer).
+    setSimParamsPorMoeda((atual) =>
+      atual[m] ? atual : { ...atual, [m]: { ...SIM_DEFAULTS } },
+    );
+  };
+
+  const atualizarParamSimMoeda = (m, campo, valor) =>
+    setSimParamsPorMoeda((atual) => ({
+      ...atual,
+      [m]: { ...(atual[m] || SIM_DEFAULTS), [campo]: valor },
+    }));
 
   const [textoAnalise, setTextoAnalise] = useState("");
   const [resultadoAnalise, setResultadoAnalise] = useState(null);
@@ -92,6 +168,9 @@ function App() {
 
   const [coletando, setColetando] = useState(false);
   const [coletaMsg, setColetaMsg] = useState(null);
+  // Aviso de fallback: quando a coleta autenticada (twikit) falha e o
+  // sistema usa um método com cobertura mais limitada (ver x_collector.py).
+  const [avisoMsg, setAvisoMsg] = useState(null);
 
   const [autoRefresh, setAutoRefresh] = useState(true);
 
@@ -110,6 +189,18 @@ function App() {
   const [correlacaoLoading, setCorrelacaoLoading] = useState(false);
   const [gerandoPdf, setGerandoPdf] = useState(false);
   const [gerandoPdfCorr, setGerandoPdfCorr] = useState(false);
+
+  // Seções recolhíveis (tabela de correlação, tabelas de trades por moeda).
+  // Guarda só os ids FECHADOS — por padrão tudo começa expandido.
+  const [secoesFechadas, setSecoesFechadas] = useState(() => new Set());
+  const alternarSecao = (id) =>
+    setSecoesFechadas((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+  const secaoAberta = (id) => !secoesFechadas.has(id);
 
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
@@ -256,7 +347,7 @@ function App() {
           ? {
               moeda,
               perfis: listaDePerfis(perfisX),
-              limite_por_perfil: 20,
+              limite_por_perfil: 100,
             }
           : {
               moeda,
@@ -275,6 +366,11 @@ function App() {
         const dados =
           f === "x" ? await api.coletarX(corpo) : await api.coletarReddit(corpo);
         setColetaMsg(`${silencioso ? "[Auto] " : ""}${dados.mensagem}`);
+        setAvisoMsg(
+          dados.avisos && dados.avisos.length > 0
+            ? dados.avisos.join(" · ")
+            : null,
+        );
         await carregarDados(moeda, f, dataInicio, dataFim);
         carregarCorrelacao(moeda, f);
       } catch (e) {
@@ -312,15 +408,113 @@ function App() {
     setFeedLoading(true);
     setErro(null);
     try {
-      const dados = await api.feedX({ perfis, limite_por_perfil: 30 });
+      const dados = await api.feedX({
+        perfis,
+        limite_por_perfil: 100,
+        data_inicio: feedDataInicio || undefined,
+        data_fim: feedDataFim || undefined,
+      });
       setFeedTweets(dados.tweets || []);
-      if ((dados.tweets || []).length === 0) {
-        setColetaMsg("Nenhum tweet retornado para esses perfis.");
+      if ((dados.tweets || []).length === 0 && !(dados.avisos || []).length) {
+        setColetaMsg(
+          feedDataInicio || feedDataFim
+            ? "Nenhum tweet dentro do período informado (o X só traz os mais recentes)."
+            : "Nenhum tweet retornado para esses perfis.",
+        );
       }
+      setAvisoMsg(
+        dados.avisos && dados.avisos.length > 0
+          ? dados.avisos.join(" · ")
+          : null,
+      );
     } catch (e) {
       setErro(`Falha ao carregar feed: ${e.message}`);
     } finally {
       setFeedLoading(false);
+    }
+  };
+
+  // ── Simulador de investimento ─────────────────────────────────────
+
+  const simularInvestimento = async () => {
+    // No modo Flat, a compra depende só do preço — perfis não entram.
+    const perfis = simModo === "fomo" ? listaDePerfis(perfisX) : [];
+    if (simModo === "fomo" && perfis.length === 0) {
+      setErro("Informe ao menos um perfil do X para simular no modo FOMO.");
+      return;
+    }
+    if (simMoedas.length === 0) {
+      setErro("Selecione ao menos uma moeda para simular.");
+      return;
+    }
+    if (!simDataInicio || !simDataFim) {
+      setErro(
+        "Informe o período (de/até) da simulação — os campos ficam dentro " +
+          "da seção do Simulador, separados do filtro de data do Feed.",
+      );
+      return;
+    }
+    for (const m of simMoedas) {
+      const p = paramsDaMoeda(m);
+      if (Number(p.valor_por_compra) > Number(p.capital_inicial)) {
+        setErro(
+          `${m}: o valor por compra não pode ser maior que o capital inicial.`,
+        );
+        return;
+      }
+    }
+
+    setSimulando(true);
+    setErro(null);
+    try {
+      // Cada moeda roda como uma simulação independente e isolada, com seus
+      // próprios parâmetros — os posts e os candles são filtrados por moeda
+      // no backend, então uma compra de ETH nunca entra no resultado do BTC
+      // (ver services/simulacao.py). São backtests paralelos para
+      // comparação, não um único portfólio compartilhado.
+      const entradas = await Promise.all(
+        simMoedas.map(async (m) => {
+          const p = paramsDaMoeda(m);
+          try {
+            const resultado = await api.simularInvestimento({
+              moeda: m,
+              modo: simModo,
+              perfis: simModo === "fomo" ? perfis : undefined,
+              data_inicio: simDataInicio,
+              data_fim: simDataFim,
+              capital_inicial: Number(p.capital_inicial),
+              valor_por_compra: Number(p.valor_por_compra),
+              percentual_lucro_venda: Number(p.percentual_lucro_venda),
+              percentual_queda_compra: Number(p.percentual_queda_compra),
+              percentual_perda_aceita: Number(p.percentual_perda_aceita),
+            });
+            return [m, resultado];
+          } catch (e) {
+            return [
+              m,
+              {
+                vazio: true,
+                mensagem:
+                  e instanceof ApiError
+                    ? `Falha na simulação de ${m}: ${e.message}`
+                    : `Falha ao simular ${m}.`,
+              },
+            ];
+          }
+        }),
+      );
+
+      const resultados = Object.fromEntries(entradas);
+      setSimResultados(resultados);
+
+      const vazias = entradas.filter(([, r]) => r.vazio);
+      if (vazias.length === entradas.length) {
+        setColetaMsg(vazias[0][1].mensagem);
+      }
+    } catch (e) {
+      setErro("Falha ao simular. Verifique o backend.");
+    } finally {
+      setSimulando(false);
     }
   };
 
@@ -428,6 +622,46 @@ function App() {
 
   const resumoCorr = correlacao?.resumo;
   const temCorrelacao = ehSocial(fonte) && correlacao?.pontos?.length > 0;
+
+  // Consolida o resultado de todas as moedas simuladas num "view" único de
+  // lucro total — cada moeda continua sendo um backtest independente (ver
+  // simularInvestimento), isto só soma os resultados pra dar a visão geral.
+  const simResultadosValidos = simResultados
+    ? Object.entries(simResultados).filter(([, r]) => !r.vazio)
+    : [];
+  const simResumoTotal =
+    simResultadosValidos.length > 0
+      ? simResultadosValidos.reduce(
+          (acc, [m, r]) => {
+            acc.capitalTotal += r.parametros.capital_inicial;
+            acc.patrimonioTotal += r.resumo.patrimonio_final;
+            acc.totalCompras += r.resumo.total_compras;
+            acc.totalVendas += r.resumo.total_vendas;
+            if (r.resumo.superou_buy_and_hold) acc.superaramBH += 1;
+            acc.porMoeda.push({
+              moeda: m,
+              lucro: r.resumo.lucro_total,
+              lucroPct: r.resumo.lucro_total_pct,
+            });
+            return acc;
+          },
+          {
+            capitalTotal: 0,
+            patrimonioTotal: 0,
+            totalCompras: 0,
+            totalVendas: 0,
+            superaramBH: 0,
+            porMoeda: [],
+          },
+        )
+      : null;
+  if (simResumoTotal) {
+    simResumoTotal.lucroTotal =
+      simResumoTotal.patrimonioTotal - simResumoTotal.capitalTotal;
+    simResumoTotal.lucroTotalPct = simResumoTotal.capitalTotal
+      ? (simResumoTotal.lucroTotal / simResumoTotal.capitalTotal) * 100
+      : 0;
+  }
 
   const tooltipStyle = {
     backgroundColor: "#0f172a",
@@ -610,6 +844,14 @@ function App() {
           <div className="toast toast--success">
             <span>✓ {coletaMsg}</span>
             <button className="toast-close" onClick={() => setColetaMsg(null)}>
+              ✕
+            </button>
+          </div>
+        )}
+        {avisoMsg && (
+          <div className="toast toast--warning">
+            <span>⚠ {avisoMsg}</span>
+            <button className="toast-close" onClick={() => setAvisoMsg(null)}>
               ✕
             </button>
           </div>
@@ -998,6 +1240,14 @@ function App() {
               </ResponsiveContainer>
             </div>
 
+            <CollapseToggle
+              aberto={secaoAberta("corr-tabela")}
+              onToggle={() => alternarSecao("corr-tabela")}
+              rotulo="Detalhamento por hora"
+              contagem={correlacao.pontos.length}
+            />
+
+            {secaoAberta("corr-tabela") && (
             <div className="corr-table-wrapper">
               <table className="corr-table">
                 <thead>
@@ -1060,6 +1310,7 @@ function App() {
                 </tbody>
               </table>
             </div>
+            )}
           </section>
         )}
 
@@ -1093,6 +1344,43 @@ function App() {
                 onChange={(e) => setPerfisX(e.target.value)}
                 placeholder="whale_alert, elonmusk, VitalikButerin"
               />
+            </div>
+            <div className="date-filter">
+              <label className="date-filter__label">
+                Feed de:
+                <input
+                  type="date"
+                  className="date-filter__input"
+                  value={feedDataInicio}
+                  max={feedDataFim || undefined}
+                  onChange={(e) => setFeedDataInicio(e.target.value)}
+                />
+              </label>
+              <label className="date-filter__label">
+                até:
+                <input
+                  type="date"
+                  className="date-filter__input"
+                  value={feedDataFim}
+                  min={feedDataInicio || undefined}
+                  onChange={(e) => setFeedDataFim(e.target.value)}
+                />
+              </label>
+              {(feedDataInicio || feedDataFim) && (
+                <button
+                  className="btn btn-ghost btn--sm"
+                  onClick={() => {
+                    setFeedDataInicio("");
+                    setFeedDataFim("");
+                  }}
+                >
+                  Limpar
+                </button>
+              )}
+              <span className="action-hint">
+                Filtra os tweets carregados — o X só traz os mais recentes,
+                então períodos antigos podem vir vazios.
+              </span>
             </div>
             <div className="input-group input-group--inline">
               <label htmlFor="auto-coleta">Coleta automática:</label>
@@ -1132,6 +1420,479 @@ function App() {
                 {coletando ? "Analisando..." : "🧠 Analisar e salvar"}
               </button>
             </div>
+          </section>
+        )}
+
+        {/* SIMULADOR DE INVESTIMENTO */}
+        {fonte === "x" && (
+          <section className="chart-section simulador-section">
+            <div className="chart-header">
+              <div>
+                <h2>{"\u{1F3AF}"} Simulador de Investimento</h2>
+                <span className="chart-pill">
+                  {simModo === "fomo"
+                    ? "FOMO — compra baseada no sentimento dos posts já coletados"
+                    : "Flat — compra baseada só na variação percentual do preço"}
+                </span>
+              </div>
+            </div>
+
+            <div className="toggle-group sim-modo-toggle">
+              <button
+                type="button"
+                className={`toggle-button ${simModo === "fomo" ? "toggle-button--active" : ""}`}
+                onClick={() => setSimModo("fomo")}
+              >
+                {"\u{1F525}"} FOMO (sentimento)
+              </button>
+              <button
+                type="button"
+                className={`toggle-button ${simModo === "flat" ? "toggle-button--active" : ""}`}
+                onClick={() => setSimModo("flat")}
+              >
+                {"\u{1F4C8}"} Flat (só preço)
+              </button>
+            </div>
+            <p className="sim-modo-desc">
+              {simModo === "fomo"
+                ? "Só compra quando o sentimento dos perfis do X é positivo " +
+                  "e o preço caiu — exige posts já coletados (\"Analisar e " +
+                  "salvar\") no período."
+                : "Ignora sentimento e perfis por completo: compra só pela " +
+                  "queda de preço, funciona em qualquer período com dados " +
+                  "da Binance, mesmo sem nenhuma coleta prévia."}
+            </p>
+
+            <div className="action-bar action-bar--col">
+              <div className="input-group">
+                <label>Moedas a simular</label>
+                <div className="sim-moedas-grid">
+                  {MOEDAS.map((m) => (
+                    <label key={m} className="checkbox-pill">
+                      <input
+                        type="checkbox"
+                        checked={simMoedas.includes(m)}
+                        onChange={() => alternarSimMoeda(m)}
+                      />
+                      {m}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="date-filter">
+                <label className="date-filter__label">
+                  Período da simulação de:
+                  <input
+                    type="date"
+                    className="date-filter__input"
+                    value={simDataInicio}
+                    max={simDataFim || undefined}
+                    onChange={(e) => setSimDataInicio(e.target.value)}
+                  />
+                </label>
+                <label className="date-filter__label">
+                  até:
+                  <input
+                    type="date"
+                    className="date-filter__input"
+                    value={simDataFim}
+                    min={simDataInicio || undefined}
+                    onChange={(e) => setSimDataFim(e.target.value)}
+                  />
+                </label>
+                {(feedDataInicio || feedDataFim) && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn--sm"
+                    onClick={() => {
+                      setSimDataInicio(feedDataInicio);
+                      setSimDataFim(feedDataFim);
+                    }}
+                  >
+                    Usar período do Feed ({feedDataInicio || "…"} a{" "}
+                    {feedDataFim || "…"})
+                  </button>
+                )}
+              </div>
+
+              {simMoedas.length > 0 && (
+                <div className="sim-params-table-wrapper">
+                  <p className="sim-params-hint">
+                    Cada moeda marcada tem sua própria estratégia — ajuste o
+                    capital, o valor por compra e os percentuais linha a
+                    linha.
+                  </p>
+                  <table className="sim-params-table">
+                    <thead>
+                      <tr>
+                        <th>Moeda</th>
+                        {SIM_CAMPOS.map((c) => (
+                          <th key={c.chave}>{c.rotulo}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {simMoedas.map((m) => {
+                        const p = paramsDaMoeda(m);
+                        return (
+                          <tr key={m}>
+                            <td className="sim-params-table__moeda">{m}</td>
+                            {SIM_CAMPOS.map((c) => (
+                              <td key={c.chave}>
+                                <input
+                                  className="input input--table"
+                                  type="number"
+                                  min={c.min}
+                                  step={c.step}
+                                  value={p[c.chave]}
+                                  onChange={(e) =>
+                                    atualizarParamSimMoeda(
+                                      m, c.chave, e.target.value,
+                                    )
+                                  }
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="btn-row">
+                <button
+                  className="btn btn-primary"
+                  disabled={simulando}
+                  onClick={simularInvestimento}
+                >
+                  {simulando ? "Simulando..." : "▶ Simular investimento"}
+                </button>
+                <span className="action-hint">
+                  {simModo === "fomo"
+                    ? `Perfis: ${listaDePerfis(perfisX).join(", ") || "nenhum"} · ` +
+                      `posts já salvos no banco nesse período (colete antes ` +
+                      `com "Analisar e salvar" se estiver vazio)`
+                    : "Modo Flat: não depende de perfis nem de posts coletados."}
+                </span>
+              </div>
+            </div>
+
+            {/* VIEW DE LUCRO TOTAL — soma de todas as moedas simuladas */}
+            {simResumoTotal && (
+              <div className="sim-total-view">
+                <h3 className="sim-total-view__titulo">
+                  {"\u{1F4B0}"} Lucro Total ({simResumoTotal.porMoeda.length}{" "}
+                  {simResumoTotal.porMoeda.length === 1 ? "moeda" : "moedas"})
+                </h3>
+                <div className="corr-summary">
+                  <div className="corr-card">
+                    <span className="corr-card-value">
+                      {fmtMoeda(simResumoTotal.patrimonioTotal)}
+                    </span>
+                    <span className="corr-card-label">Patrimônio Total</span>
+                    <span className="corr-card-desc">
+                      Capital inicial somado: {fmtMoeda(simResumoTotal.capitalTotal)}
+                    </span>
+                  </div>
+                  <div
+                    className={`corr-card ${
+                      simResumoTotal.lucroTotal >= 0
+                        ? "corr-card--acerto"
+                        : "corr-card--erro"
+                    }`}
+                  >
+                    <span className="corr-card-value">
+                      {fmtMoeda(simResumoTotal.lucroTotal)}
+                    </span>
+                    <span className="corr-card-label">Ganho/Perda Total</span>
+                    <span className="corr-card-desc">
+                      {percentual(simResumoTotal.lucroTotalPct)} sobre o
+                      capital somado
+                    </span>
+                  </div>
+                  <div className="corr-card corr-card--taxa">
+                    <span className="corr-card-value">
+                      {simResumoTotal.superaramBH}/{simResumoTotal.porMoeda.length}
+                    </span>
+                    <span className="corr-card-label">
+                      Superaram Buy &amp; Hold
+                    </span>
+                    <span className="corr-card-desc">moedas simuladas</span>
+                  </div>
+                  <div className="corr-card">
+                    <span className="corr-card-value">
+                      {simResumoTotal.totalCompras}/{simResumoTotal.totalVendas}
+                    </span>
+                    <span className="corr-card-label">
+                      Compras/Vendas (todas as moedas)
+                    </span>
+                    <span className="corr-card-desc">somado de todos os backtests</span>
+                  </div>
+                </div>
+
+                {simResumoTotal.porMoeda.length > 1 && (
+                  <div className="chart-wrapper">
+                    <ResponsiveContainer minWidth={0} minHeight={140}>
+                      <BarChart data={simResumoTotal.porMoeda}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                        <XAxis
+                          dataKey="moeda"
+                          stroke="#64748b"
+                          tick={{ fontSize: 11 }}
+                        />
+                        <YAxis
+                          stroke="#64748b"
+                          tickFormatter={(v) => `${v}%`}
+                          tick={{ fontSize: 11 }}
+                        />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(v, _n, props) => [
+                            `${percentual(v)} (${fmtMoeda(props.payload.lucro)})`,
+                            "Lucro",
+                          ]}
+                        />
+                        <ReferenceLine y={0} stroke="#64748b" strokeDasharray="3 3" />
+                        <Bar dataKey="lucroPct" name="Lucro %" radius={[4, 4, 0, 0]} maxBarSize={40}>
+                          {simResumoTotal.porMoeda.map((p, i) => (
+                            <Cell
+                              key={`sim-total-${i}`}
+                              fill={p.lucroPct >= 0 ? "#22c55e" : "#ef4444"}
+                              fillOpacity={0.85}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Cada moeda marcada roda como um backtest independente e
+                isolado — posts e candles são filtrados por moeda no
+                backend, então uma compra de ETH nunca aparece no
+                resultado do BTC (ver services/simulacao.py). */}
+            {simResultados &&
+              Object.entries(simResultados).map(([m, resultado]) => (
+                <div key={m} className="sim-moeda-bloco">
+                  <h3 className="sim-moeda-titulo">
+                    {"\u{1FA99}"} {m}
+                  </h3>
+
+                  {resultado.vazio ? (
+                    <p className="corr-aviso">⚠ {resultado.mensagem}</p>
+                  ) : (
+                    <>
+                      <div className="corr-summary">
+                        <div className="corr-card">
+                          <span className="corr-card-value">
+                            {fmtMoeda(resultado.resumo.patrimonio_final)}
+                          </span>
+                          <span className="corr-card-label">
+                            Patrimônio Final
+                          </span>
+                          <span className="corr-card-desc">
+                            Caixa + posições abertas
+                          </span>
+                        </div>
+                        <div
+                          className={`corr-card ${
+                            resultado.resumo.lucro_total >= 0
+                              ? "corr-card--acerto"
+                              : "corr-card--erro"
+                          }`}
+                        >
+                          <span className="corr-card-value">
+                            {resultado.resumo.taxa_acerto_pct != null
+                              ? `${resultado.resumo.taxa_acerto_pct}%`
+                              : "—"}
+                          </span>
+                          <span className="corr-card-label">
+                            Taxa de Acerto
+                          </span>
+                          <span className="corr-card-desc">
+                            {fmtMoeda(resultado.resumo.lucro_total)} (
+                            {percentual(resultado.resumo.lucro_total_pct)})
+                            ganho/perda total
+                          </span>
+                        </div>
+                        <div className="corr-card corr-card--taxa">
+                          <span className="corr-card-value">
+                            {percentual(resultado.resumo.buy_and_hold.lucro_pct)}
+                          </span>
+                          <span className="corr-card-label">Buy &amp; Hold</span>
+                          <span className="corr-card-desc">
+                            {resultado.resumo.superou_buy_and_hold
+                              ? "Estratégia superou o benchmark"
+                              : "Estratégia ficou abaixo do benchmark"}
+                          </span>
+                        </div>
+                        <div className="corr-card">
+                          <span className="corr-card-value">
+                            {resultado.resumo.total_compras}/
+                            {resultado.resumo.total_vendas}
+                          </span>
+                          <span className="corr-card-label">
+                            Compras/Vendas
+                          </span>
+                          <span className="corr-card-desc">
+                            {resultado.resumo.posicoes_abertas_final}{" "}
+                            posição(ões) aberta(s)
+                            {resultado.resumo.vendas_por_stop_loss > 0 &&
+                              ` · ${resultado.resumo.vendas_por_stop_loss} por stop-loss`}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="chart-wrapper">
+                        <ResponsiveContainer minWidth={0} minHeight={200}>
+                          <AreaChart
+                            data={resultado.serie_patrimonio.map((p) => ({
+                              ...p,
+                              rotulo: rotuloHora(p.timestamp),
+                            }))}
+                          >
+                            <defs>
+                              <linearGradient
+                                id={`gradPatrimonio-${m}`}
+                                x1="0"
+                                y1="0"
+                                x2="0"
+                                y2="1"
+                              >
+                                <stop
+                                  offset="5%"
+                                  stopColor="#22c55e"
+                                  stopOpacity={0.3}
+                                />
+                                <stop
+                                  offset="95%"
+                                  stopColor="#22c55e"
+                                  stopOpacity={0}
+                                />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid
+                              strokeDasharray="3 3"
+                              stroke="#1e293b"
+                            />
+                            <XAxis
+                              dataKey="rotulo"
+                              stroke="#64748b"
+                              tick={{ fontSize: 11 }}
+                            />
+                            <YAxis
+                              stroke="#22c55e"
+                              domain={["auto", "auto"]}
+                              tickFormatter={(v) =>
+                                `$${Number(v).toLocaleString()}`
+                              }
+                              tick={{ fontSize: 11 }}
+                            />
+                            <Tooltip
+                              contentStyle={tooltipStyle}
+                              formatter={(v, nome) => [fmtMoeda(v), nome]}
+                              labelFormatter={(l) => `Hora (UTC): ${l}`}
+                            />
+                            <ReferenceLine
+                              y={Number(resultado.parametros.capital_inicial)}
+                              stroke="#64748b"
+                              strokeDasharray="3 3"
+                              label={{
+                                value: "Capital inicial",
+                                fill: "#64748b",
+                                fontSize: 11,
+                                position: "right",
+                              }}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="patrimonio"
+                              name="Patrimônio"
+                              stroke="#22c55e"
+                              strokeWidth={2}
+                              fill={`url(#gradPatrimonio-${m})`}
+                              dot={false}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      {resultado.trades.length > 0 && (
+                        <>
+                          <CollapseToggle
+                            aberto={secaoAberta(`sim-trades-${m}`)}
+                            onToggle={() => alternarSecao(`sim-trades-${m}`)}
+                            rotulo="Trades"
+                            contagem={resultado.trades.length}
+                          />
+                          {secaoAberta(`sim-trades-${m}`) && (
+                            <div className="corr-table-wrapper">
+                              <table className="corr-table">
+                                <thead>
+                                  <tr>
+                                    <th>Tipo</th>
+                                    <th>Hora (UTC)</th>
+                                    <th>Preço</th>
+                                    <th>Qtd.</th>
+                                    <th>Valor</th>
+                                    <th>Lucro</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {resultado.trades.map((t, i) => (
+                                    <tr
+                                      key={i}
+                                      className={
+                                        t.tipo !== "venda"
+                                          ? ""
+                                          : t.motivo === "perda"
+                                            ? "corr-row--fail"
+                                            : "corr-row--ok"
+                                      }
+                                    >
+                                      <td>
+                                        <span
+                                          className={`corr-badge ${
+                                            t.tipo === "compra"
+                                              ? "corr-badge--na"
+                                              : t.motivo === "perda"
+                                                ? "corr-badge--fail"
+                                                : "corr-badge--ok"
+                                          }`}
+                                        >
+                                          {t.tipo === "compra"
+                                            ? "\u{1F7E2} Compra"
+                                            : t.motivo === "perda"
+                                              ? "\u{1F6D1} Venda (Stop-Loss)"
+                                              : "\u{1F534} Venda (Lucro)"}
+                                        </span>
+                                      </td>
+                                      <td>{dataHoraCompleta(t.timestamp)}</td>
+                                      <td>{fmtMoeda(t.preco)}</td>
+                                      <td>{t.qtd.toFixed(6)}</td>
+                                      <td>{fmtMoeda(t.valor)}</td>
+                                      <td>
+                                        {t.tipo === "venda"
+                                          ? `${fmtMoeda(t.lucro)} (${percentual(t.lucro_pct)})`
+                                          : "—"}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
           </section>
         )}
 

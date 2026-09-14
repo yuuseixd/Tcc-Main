@@ -40,6 +40,7 @@ from schemas import (
     ColetaXRequest,
     FeedXRequest,
     LoginXRequest,
+    SimulacaoInvestimentoRequest,
     TextoParaAnalise,
 )
 from services import correlacao as svc_correlacao
@@ -47,6 +48,7 @@ from services import mercado as svc_mercado
 from services import posts as svc_posts
 from services import relatorios as svc_relatorios
 from services import sentimento as svc_sentimento
+from services import simulacao as svc_simulacao
 from utils.tempo import (
     agora_utc,
     para_iso_utc,
@@ -549,6 +551,51 @@ async def correlacao_sentimento_preco(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Simulação de investimento
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/simulacao/investimento", tags=["simulacao"])
+async def simular_investimento(
+    body: SimulacaoInvestimentoRequest, db: Session = Depends(get_db)
+):
+    """Backtest de compra/venda simulada — modo FOMO (sentimento) ou Flat (só preço).
+
+    FOMO roda sobre ``social_posts`` já salvos (não dispara coleta ao vivo);
+    Flat ignora posts e perfis. Ver ``services/simulacao.py`` para a regra
+    de decisão completa.
+    """
+    moeda_u = validar_moeda(body.moeda)
+
+    inicio = parse_data_inicio(body.data_inicio)
+    fim = parse_data_fim(body.data_fim)
+    if not inicio or not fim or inicio >= fim:
+        raise HTTPException(
+            status_code=400,
+            detail="Período inválido: informe data_inicio anterior a data_fim.",
+        )
+    if (fim - inicio).days > svc_simulacao.MAX_DIAS_SIMULACAO:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Período máximo da simulação é de "
+            f"{svc_simulacao.MAX_DIAS_SIMULACAO} dias.",
+        )
+    if body.valor_por_compra > body.capital_inicial:
+        raise HTTPException(
+            status_code=400,
+            detail="Valor por compra não pode ser maior que o capital inicial.",
+        )
+
+    return await run_in_threadpool(
+        svc_simulacao.simular_investimento,
+        db, moeda_u, body.perfis or [], inicio, fim,
+        body.capital_inicial, body.valor_por_compra,
+        body.percentual_lucro_venda, body.percentual_queda_compra,
+        body.percentual_perda_aceita, body.modo,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Relatórios PDF
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -659,9 +706,10 @@ async def coletar_x(body: ColetaXRequest, db: Session = Depends(get_db)):
     _exigir_bert()
     moeda_u = validar_moeda(body.moeda)
 
+    avisos: list[str] = []
     try:
         brutos = await run_in_threadpool(
-            coletar_tweets_x, body.perfis, moeda_u, body.limite_por_perfil
+            coletar_tweets_x, body.perfis, moeda_u, body.limite_por_perfil, avisos
         )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
@@ -670,22 +718,51 @@ async def coletar_x(body: ColetaXRequest, db: Session = Depends(get_db)):
         svc_posts.salvar_posts, db, moeda_u, "X", brutos
     )
     return {**resultado.como_dict(), "moeda": moeda_u,
-            "perfis_consultados": body.perfis}
+            "perfis_consultados": body.perfis, "avisos": avisos}
 
 
 @app.post("/feed/x", tags=["feed"])
 async def feed_x(body: FeedXRequest):
-    """Timeline dos perfis com análise de sentimento, sem gravar no banco."""
+    """Timeline dos perfis com análise de sentimento, sem gravar no banco.
+
+    ``data_inicio``/``data_fim`` filtram o que foi coletado — os coletores
+    só trazem os tweets mais recentes (não há busca histórica por data sem
+    API paga do X), então um período antigo pode simplesmente não ter
+    nenhum tweet dentro dele.
+    """
+    avisos: list[str] = []
     try:
         tweets = await run_in_threadpool(
-            coletar_feed_x, body.perfis, body.limite_por_perfil
+            coletar_feed_x, body.perfis, body.limite_por_perfil, avisos
         )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    inicio = parse_data_inicio(body.data_inicio)
+    fim = parse_data_fim(body.data_fim)
+    if inicio or fim:
+        antes_do_filtro = len(tweets)
+        tweets = [
+            tw
+            for tw in tweets
+            if (not inicio or tw["timestamp_post"] >= inicio)
+            and (not fim or tw["timestamp_post"] <= fim)
+        ]
+        if antes_do_filtro and not tweets:
+            avisos.append(
+                f"{antes_do_filtro} tweet(s) coletado(s), mas nenhum caiu "
+                "dentro do período informado — os métodos de fallback do X "
+                "costumam trazer um histórico com grandes lacunas de data."
+            )
+
     resultado = await run_in_threadpool(_classificar_feed, tweets)
 
-    return {"total": len(resultado), "perfis": body.perfis, "tweets": resultado}
+    return {
+        "total": len(resultado),
+        "perfis": body.perfis,
+        "tweets": resultado,
+        "avisos": avisos,
+    }
 
 
 def _classificar_feed(tweets: list[dict]) -> list[dict]:

@@ -7,7 +7,11 @@ python-dotenv
 torch
 fpdf2
 pydantic
-twikit>=2.3.3
+# twikit oficial (d60/twikit) está quebrado desde 18/03/2026: o X mudou o
+# bundle JS (ondemand.s.js) e o parser de "KEY_BYTE indices" do twikit não
+# acompanhou (github.com/d60/twikit/issues/408). Usando o fork mantido
+# unclecode/twikit, que corrige esse parsing — mesmo nome de módulo, drop-in.
+git+https://github.com/unclecode/twikit.git
 undetected-chromedriver>=3.5.5
 selenium>=4.20.0
 

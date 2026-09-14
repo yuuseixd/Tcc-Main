@@ -96,6 +96,9 @@ export const api = {
   feedX: (corpo, signal) =>
     request("/feed/x", { method: "POST", body: corpo, signal }),
 
+  simularInvestimento: (corpo, signal) =>
+    request("/simulacao/investimento", { method: "POST", body: corpo, signal }),
+
   analisarTexto: (texto, moeda) =>
     request("/analisar-texto", { method: "POST", body: { texto, moeda } }),
 

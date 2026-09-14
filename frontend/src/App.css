@@ -451,6 +451,12 @@ body {
   color: #86efac;
 }
 
+.toast--warning {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  color: #eab308;
+}
+
 .toast-close {
   background: none;
   border: none;
@@ -1260,4 +1266,171 @@ body {
   .corr-summary {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── SIMULADOR DE INVESTIMENTO ───────────────────────────── */
+.sim-inputs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.sim-inputs-grid .input {
+  max-width: none;
+}
+
+@media (max-width: 600px) {
+  .sim-inputs-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.sim-modo-toggle {
+  margin-bottom: 10px;
+}
+
+.sim-modo-desc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+.sim-params-table-wrapper {
+  margin-bottom: 16px;
+}
+
+.sim-params-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.sim-params-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.sim-params-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border);
+}
+
+.sim-params-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sim-params-table__moeda {
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.input--table {
+  max-width: 110px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 700px) {
+  .sim-params-table-wrapper {
+    overflow-x: auto;
+  }
+  .sim-params-table {
+    min-width: 560px;
+  }
+}
+
+.sim-moedas-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkbox-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.checkbox-pill:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.checkbox-pill input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Um bloco de resultado por moeda simulada — separa visualmente quando
+   várias moedas são marcadas de uma vez. */
+.sim-total-view {
+  padding: 18px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.sim-total-view__titulo {
+  font-size: 1.05rem;
+  margin-bottom: 14px;
+}
+
+.sim-moeda-bloco {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px dashed var(--border);
+}
+
+.sim-moeda-titulo {
+  font-size: 1.05rem;
+  margin-bottom: 14px;
+}
+
+/* ── Seções recolhíveis (tabelas longas) ─────────────────── */
+.collapse-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.collapse-toggle:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.collapse-toggle__icone {
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }

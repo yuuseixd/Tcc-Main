@@ -34,7 +34,7 @@ _BROWSER_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
 
-# Cache: {username: (momento_da_coleta, quantidade_pedida, [tweets])}
+# Cache: {username: (momento_da_coleta, quantidade_pedida, [tweets], metodo)}
 _CACHE: Dict[str, tuple] = {}
 
 
@@ -322,18 +322,46 @@ def _coletar_perfil_api(username: str, limite: int = 30) -> List[Dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _coletar_perfil(username: str, limite: int = 30) -> List[Dict]:
-    """Tenta os três métodos em ordem de confiabilidade, com cache por TTL."""
+# Rótulos legíveis dos métodos de fallback, usados nos avisos ao usuário.
+_ROTULO_METODO = {
+    "syndication": "modo público (sem login — cobertura de tweets mais limitada)",
+    "api-v2": "API oficial v2",
+}
+
+
+def _aviso_fallback(username: str, metodo: str) -> str:
+    return (
+        f"@{username}: coleta autenticada (twikit) indisponível — usando "
+        f"{_ROTULO_METODO.get(metodo, metodo)}."
+    )
+
+
+def _coletar_perfil(
+    username: str, limite: int = 30, avisos: List[str] | None = None,
+) -> List[Dict]:
+    """Tenta os três métodos em ordem de confiabilidade, com cache por TTL.
+
+    ``avisos`` (opcional, mesmo padrão de
+    ``collectors/reddit_collector.py::coletar_posts_reddit_json``) recebe um
+    aviso sempre que o método mais confiável (twikit, autenticado) falha e a
+    coleta cai para um método de cobertura mais limitada — sem isso, um feed
+    incompleto ou com grandes lacunas de data parecia bug em vez de fallback.
+    """
+    if avisos is None:
+        avisos = []
+
     cache_key = username.lower()
 
     entrada = _CACHE.get(cache_key)
     if entrada:
-        momento, qtd_pedida, tweets_cache = entrada
+        momento, qtd_pedida, tweets_cache, metodo_cache = entrada
         # O cache só serve se cobrir a quantidade pedida agora. Antes ele
         # devolvia `tweets[:limite]` mesmo quando guardava menos tweets do que
         # o novo pedido, retornando silenciosamente menos do que o solicitado.
         if _time.time() - momento < X_CACHE_TTL and qtd_pedida >= limite:
             logger.info("[cache] %d tweets de @%s", len(tweets_cache), username)
+            if metodo_cache != "twikit":
+                avisos.append(_aviso_fallback(username, metodo_cache))
             return tweets_cache[:limite]
 
     metodos = (
@@ -342,18 +370,26 @@ def _coletar_perfil(username: str, limite: int = 30) -> List[Dict]:
         ("api-v2", _coletar_perfil_api),
     )
 
+    falhas: List[str] = []
     for nome, metodo in metodos:
         try:
             tweets = metodo(username, limite)
         except Exception as e:
             logger.warning("[%s] falhou para @%s: %s", nome, username, e)
+            falhas.append(nome)
             continue
 
         if tweets:
             logger.info("[%s] %d tweets de @%s", nome, len(tweets), username)
-            _CACHE[cache_key] = (_time.time(), limite, tweets)
+            _CACHE[cache_key] = (_time.time(), limite, tweets, nome)
+            if nome != "twikit":
+                avisos.append(_aviso_fallback(username, nome))
             return tweets
 
+    avisos.append(
+        f"@{username}: nenhum método de coleta funcionou "
+        f"({', '.join(falhas) or 'sem métodos disponíveis'})."
+    )
     return []
 
 
@@ -362,12 +398,22 @@ def limpar_cache() -> None:
     _CACHE.clear()
 
 
-def coletar_feed_x(perfis: List[str], limite_por_perfil: int = 30) -> List[Dict]:
+def coletar_feed_x(
+    perfis: List[str],
+    limite_por_perfil: int = 30,
+    avisos: List[str] | None = None,
+) -> List[Dict]:
     """Coleta a timeline dos perfis, sem filtrar por moeda.
+
+    ``avisos`` (opcional) recebe as mensagens de fallback/falha por perfil —
+    ver :func:`_coletar_perfil`.
 
     Levanta ``RuntimeError`` apenas se nenhum perfil retornar nada — falha
     parcial é registrada em log e não impede o restante da coleta.
     """
+    if avisos is None:
+        avisos = []
+
     todos: List[Dict] = []
     falharam: List[str] = []
 
@@ -376,7 +422,7 @@ def coletar_feed_x(perfis: List[str], limite_por_perfil: int = 30) -> List[Dict]
         if not username:
             continue
 
-        tweets = _coletar_perfil(username, limite_por_perfil)
+        tweets = _coletar_perfil(username, limite_por_perfil, avisos)
         if tweets:
             todos.extend(tweets)
         else:
@@ -400,8 +446,9 @@ def coletar_tweets_x(
     perfis: List[str],
     moeda: str = "BTC",
     limite_por_perfil: int = 20,
+    avisos: List[str] | None = None,
 ) -> List[Dict]:
     """Coleta tweets dos perfis e mantém apenas os que citam a moeda."""
-    todos = coletar_feed_x(perfis, limite_por_perfil)
+    todos = coletar_feed_x(perfis, limite_por_perfil, avisos)
 
     return [tw for tw in todos if texto_menciona_moeda(tw["texto"], moeda)]
