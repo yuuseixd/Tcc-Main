@@ -22,3 +22,5 @@ protobuf
 
 # Testes
 pytest
+
+openpyxl>=3.1

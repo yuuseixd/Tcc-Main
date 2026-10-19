@@ -87,32 +87,7 @@ def mapear_label(label: str, id2label: dict | None = None) -> str:
     Cada modelo usa uma convenção diferente: estrelas (1–5), positive/negative/
     neutral, ou LABEL_0/1/2. Este mapeamento unifica todas elas.
     """
-    texto = str(label).upper()
-
-    # LABEL_0/1/2 — precisa do id2label do modelo para saber o que significam.
-    if texto.startswith("LABEL_") and id2label:
-        real = id2label.get(int(texto.split("_")[1]), "")
-        texto = str(real).upper()
-
-    if "NEUTR" in texto:
-        return svc_sentimento.NEUTRO
-    if "POS" in texto:
-        return svc_sentimento.POSITIVO
-    if "NEG" in texto:
-        return svc_sentimento.NEGATIVO
-
-    # Formato de estrelas: "1 star" ... "5 stars".
-    import re
-    m = re.search(r"\d+", texto)
-    if m:
-        estrelas = int(m.group())
-        if estrelas <= 2:
-            return svc_sentimento.NEGATIVO
-        if estrelas == 3:
-            return svc_sentimento.NEUTRO
-        return svc_sentimento.POSITIVO
-
-    return svc_sentimento.NEUTRO
+    return svc_sentimento.mapear_label(label, id2label)
 
 
 def carregar_posts(db, moeda: str, fonte: str) -> list[SocialPost]:

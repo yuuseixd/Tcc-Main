@@ -23,7 +23,7 @@ from config import DATABASE_URL
 from db import Base, engine
 
 # Importar os modelos registra as tabelas no metadata do SQLAlchemy.
-from models import MarketPoint, SocialPost  # noqa: F401
+from models import MarketPoint, Sessao, SocialPost, Usuario  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("setup_db")

@@ -50,7 +50,7 @@ CORS_ORIGINS = _env_list(
 
 # ── Modelo de IA ────────────────────────────────────────────────────────────
 BERT_MODEL_NAME = os.getenv(
-    "BERT_MODEL_NAME", "nlptown/bert-base-multilingual-uncased-sentiment"
+    "BERT_MODEL_NAME", "cardiffnlp/twitter-roberta-base-sentiment-latest"
 )
 # Carregar o modelo custa tempo/memória. Em testes isso pode ser desligado.
 CARREGAR_BERT = os.getenv("CARREGAR_BERT", "1") not in ("0", "false", "False")

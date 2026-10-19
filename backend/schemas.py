@@ -63,6 +63,8 @@ class SimulacaoInvestimentoRequest(BaseModel):
 
     moeda: str = Field("BTC", max_length=20)
     modo: str = Field("fomo", pattern="^(fomo|flat)$")
+    fonte: str = Field("X", pattern="^(?i:x|reddit)$")
+    # X: perfis (@usuario). Reddit: subreddits (r/nome); vazio = todos.
     perfis: list[str] | None = Field(None, min_length=1, max_length=50)
     data_inicio: str = Field(..., description="Data ISO de início (ex: 2026-03-01)")
     data_fim: str = Field(..., description="Data ISO de fim (ex: 2026-03-08)")
@@ -81,11 +83,17 @@ class SimulacaoInvestimentoRequest(BaseModel):
     def _moeda_upper(cls, v: str) -> str:
         return v.strip().upper()
 
+    @field_validator("fonte")
+    @classmethod
+    def _fonte_canonica(cls, v: str) -> str:
+        return "Reddit" if v.strip().lower() == "reddit" else "X"
+
     @model_validator(mode="after")
     def _perfis_obrigatorios_no_fomo(self) -> "SimulacaoInvestimentoRequest":
-        if self.modo == "fomo" and not self.perfis:
+        if self.modo == "fomo" and self.fonte == "X" and not self.perfis:
             raise ValueError(
-                "O modo FOMO exige ao menos um perfil do X (o modo Flat não)."
+                "O modo FOMO com o X exige ao menos um perfil (o modo Flat "
+                "e a fonte Reddit não)."
             )
         return self
 
@@ -99,3 +107,23 @@ class TextoParaAnalise(BaseModel):
 class LoginXRequest(BaseModel):
     auth_token: str = Field(..., min_length=10, max_length=500)
     ct0: str = Field(..., min_length=10, max_length=500)
+
+
+class CadastroRequest(BaseModel):
+    nome: str = Field(..., max_length=120)
+    email: str = Field(..., max_length=254)
+    senha: str = Field(..., max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    senha: str = Field(..., max_length=200)
+
+
+class QuestionarioRequest(BaseModel):
+    # {id_da_pergunta: índice da opção escolhida}
+    respostas: dict[str, int]
+
+
+class PerfilRequest(BaseModel):
+    perfil: str = Field(..., max_length=20)

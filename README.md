@@ -289,6 +289,81 @@ com a direção do preço.
 | POST | `/coletar/x` | Coleta e classifica tweets |
 | POST | `/feed/x` | Timeline do X com sentimento (não grava) |
 | POST | `/analisar-texto` | Classifica um texto avulso |
+| GET  | `/risco-moedas` | Volatilidade e queda máxima de cada moeda em 365 dias (aberta) |
+| GET  | `/comparacao-fontes` | Compara X e Reddit (concordância, correlação, série horária) |
+| POST | `/simulacao/investimento` | Backtest de compra e venda (FOMO ou Flat; fonte X ou Reddit) |
+| POST | `/auth/cadastro` | Cria a conta e entra |
+| POST | `/auth/login` | Entra (limite de tentativas por e-mail e IP) |
+| POST | `/auth/logout` | Encerra a sessão |
+| GET  | `/auth/eu` | Dados da conta logada |
+| GET  | `/perfil/questionario` | Perguntas do questionário de perfil (aberta) |
+| POST | `/perfil/questionario` | Calcula o perfil sugerido |
+| POST | `/perfil/confirmar` | Grava o perfil escolhido |
+
+**Quem precisa de conta.** Só a Visão geral é aberta (`/`, `/status/*`,
+`/sentimento`, `/risco-moedas`, `/historico-*`, `/correlacao`). Todo o resto (simulação,
+coleta, feed, comparação, relatórios em PDF, análise de texto, sincronização)
+exige o cabeçalho `Authorization: Bearer <token>` e responde 401 sem ele.
+
+---
+
+## Contas e perfil de investimento
+
+- **Cadastro** com nome, e-mail e senha (mínimo de 8 caracteres). A senha nunca
+  é guardada: só o hash `scrypt` com sal. A sessão usa um token aleatório; o
+  banco guarda só o SHA-256 dele, e ele expira em 7 dias ou no logout.
+- **Login** devolve a mesma mensagem para e-mail inexistente e senha errada, e
+  bloqueia por 10 minutos após 5 falhas (contagem em memória: reiniciar o
+  servidor a zera).
+- **Perfil**: o questionário tem 11 perguntas (`backend/services/perfil.py`),
+  cada uma ligada a um item do art. 3º da **Resolução CVM 30/2021**: objetivos
+  (§ 1º: período, preferência de risco, finalidade), situação financeira (§ 2º:
+  receitas, patrimônio, necessidade futura de recursos) e conhecimento (§ 3º:
+  familiaridade com produtos, frequência de operações, formação e experiência).
+  Um teste garante que os 9 itens continuam cobertos. A soma vai de 11 a 44
+  pontos, dividida em terços (Conservador até 22, Moderado até 33, Arrojado
+  acima). O sistema **sugere** e a pessoa **confirma ou ajusta**.
+- **Travas**: não ter reserva de emergência, precisar do dinheiro em breve e não
+  ter experiência alguma são fragilidades que uma boa pontuação não esconde. Uma
+  limita o perfil a Moderado; duas ou mais, a Conservador. A ANBIMA passou a
+  considerar o baixo conhecimento no perfil conservador em 05/09/2023.
+- **Risco das moedas** (`/risco-moedas`): medido nos preços diários da Binance
+  dos últimos 365 dias, não escrito à mão. A volatilidade anualizada (desvio
+  padrão dos retornos logarítmicos diários × √365) define a classe: até 50% ao
+  ano é baixo, até 70% é médio, acima é alto. Os cortes são uma escolha do
+  projeto, e a classificação é relativa entre criptomoedas (todas oscilam muito
+  mais que a renda fixa). Medição de 20/10/2025 a 19/10/2026:
+
+  | Moeda | Volatilidade ao ano | Queda máxima | Risco |
+  |-------|--------------------:|-------------:|-------|
+  | BTC | 44,0% | -48,8% | baixo |
+  | ETH | 61,0% | -62,3% | médio |
+  | SOL | 63,9% | -68,9% | médio |
+  | XRP | 64,2% | -62,5% | médio |
+  | DOGE | 66,3% | -66,4% | médio |
+  | LINK | 66,6% | -61,4% | médio |
+  | AVAX | 72,5% | -71,7% | alto |
+  | ADA | 75,3% | -78,9% | alto |
+
+  Os números mudam com o mercado (cache de 6 horas). A primeira versão do
+  projeto classificava o DOGE como o de maior risco por palpite; a medição
+  mostrou que ADA e AVAX oscilaram mais.
+- **O que o perfil muda**: o Simulador abre com meta, queda e stop-loss do
+  perfil; aparece um aviso, com os números medidos, ao escolher moedas de risco
+  acima do que o perfil tolera (Conservador até baixo, Moderado até médio,
+  Arrojado todas); e a Visão geral mostra uma leitura adaptada.
+- **Fundamentação**: Resolução CVM 30, art. 3º e 4º
+  (<https://conteudo.cvm.gov.br/legislacao/resolucoes/resol030.html>); o art. 4º
+  manda classificar o cliente em categorias previamente estabelecidas, sem
+  dizer quais. ANBIMA, regras de suitability de 05/09/2023, que citam os perfis
+  conservador, moderado e arrojado e criam regras para produtos com criptoativos
+  (<https://www.anbima.com.br/pt_br/noticias/suitability-novas-regras-da-anbima-para-definir-perfis-de-investidor-e-de-produtos-ja-estao-valendo.htm>).
+  A pontuação de 1 a 4, os cortes em terços e as travas são **escolhas do
+  projeto**; as normas não as definem.
+- É um instrumento **educacional**, não recomendação de investimento. Criptomoedas
+  nem sempre são "valores mobiliários" no sentido da Resolução 30.
+- Limites assumidos: o token fica no `localStorage` do navegador (exposto a XSS)
+  e o tráfego local não usa HTTPS. Para expor fora de `localhost`, use HTTPS.
 
 ---
 
@@ -298,7 +373,7 @@ Tudo é ajustável pelo `backend/.env` (veja `.env.example` para a lista complet
 
 | Variável | Padrão | Efeito |
 |----------|--------|--------|
-| `BERT_MODEL_NAME` | `nlptown/bert-base-...` | Modelo de sentimento |
+| `BERT_MODEL_NAME` | `cardiffnlp/twitter-roberta-base-sentiment-latest` | Modelo de sentimento |
 | `LIMIAR_VARIACAO_CANDLE` | `0.005` | Variação para o candle ser alta/baixa |
 | `LIMIAR_SENTIMENT_SCORE` | `0.1` | Score mínimo para a hora não ser neutra |
 | `CORS_ORIGINS` | `localhost:3000` | Origens autorizadas |
@@ -353,15 +428,43 @@ avaliações, não pessimismo real do mercado.
 
 ---
 
+### Troca de modelo (acurácia contra o sentimento correto)
+
+O benchmark acima mede o acerto sobre o *preço*, um alvo ruidoso. Para escolher
+o modelo, `tools/avaliar_modelos.py` compara cada um com o sentimento *correto*
+de posts rotulados à mão. Resultado em `rotulagem/amostra_sanidade.csv`
+(45 frases escritas pelos autores, 15 por classe — uma checagem inicial, não
+substitui a base rotulada de posts reais):
+
+| Modelo | Acurácia | IC 95% | F1 macro |
+|--------|---------:|--------|---------:|
+| `cardiffnlp/twitter-roberta-base-sentiment-latest` (atual) | 88,9% | [77% – 95%] | 0,892 |
+| `ProsusAI/finbert` | 73,3% | [59% – 84%] | 0,735 |
+| `ElKulako/cryptobert` | 73,3% | [59% – 84%] | 0,733 |
+| `nlptown/...-sentiment` (anterior) | 57,8% | [43% – 71%] | 0,510 |
+
+Nos 581 posts reais, o modelo anterior marcava 73% como negativos; o atual
+marca 14% (63% neutros), o que combina com uma timeline de posts factuais.
+Após reclassificar o banco (`tools/reclassificar.py --aplicar`), a taxa de
+acerto sobre o preço passou a ser 54,5% (X, 11 horas comparáveis) e 50,0%
+(Reddit, 6 horas). Esses números **não indicam poder preditivo**: o novo modelo
+produz mais horas neutras, que não contam como previsão, e a amostra
+comparável encolheu. O limite continua sendo a quantidade de dados.
+
+Para a avaliação definitiva, use `tools/exportar_para_rotular.py --n 80` (gera
+`rotulagem/posts_para_rotular.xlsx`, com lista suspensa para rotular), rotule em
+duas pessoas, cada uma na sua coluna, e rode
+`tools/avaliar_modelos.py --csv rotulagem/posts_para_rotular.xlsx`.
+
+---
+
 ## Limitações conhecidas
 
-1. **O modelo BERT não é especializado em finanças.**
-   `nlptown/bert-base-multilingual-uncased-sentiment` foi treinado em
-   avaliações de produtos (1 a 5 estrelas). Em textos financeiros ele erra com
-   frequência — classifica "bitcoin subindo forte" como negativo, com confiança
-   baixa (~0,38), e rotula 71% da base como negativa. Trocar o modelo é
-   questão de mudar `BERT_MODEL_NAME` no `.env`, mas o benchmark acima mostra
-   que, com a amostra atual, a troca não é sustentada por evidência.
+1. **O modelo é de tweets em inglês, não de finanças.**
+   `cardiffnlp/twitter-roberta-base-sentiment-latest` foi treinado em tweets
+   (a maioria em inglês); o modelo anterior (avaliações de produtos) enviesava
+   a base para negativo. A escolha foi validada só com a amostra de sanidade;
+   a validação com posts reais rotulados ainda está pendente.
 
 2. **Amostra insuficiente para conclusão estatística.** Este é o limite
    principal do trabalho hoje. Com ~50 horas comparáveis, o intervalo de

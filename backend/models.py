@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -35,6 +36,44 @@ class MarketPoint(Base):
     preco = Column(Float)
     indice_sentimento = Column(Float)
     criado_em = Column(DateTime, default=agora_utc)
+
+
+class Usuario(Base):
+    """Conta de quem usa o app, com o perfil de investimento dela.
+
+    ``perfil`` é o perfil confirmado pela pessoa; ``perfil_sugerido`` é o que o
+    questionário calculou. Os dois podem diferir (a pessoa pode ajustar).
+    A senha nunca é guardada: só o hash com sal (ver ``services/contas.py``).
+    """
+
+    __tablename__ = "usuarios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String(120), nullable=False)
+    email = Column(String(254), nullable=False, unique=True, index=True)
+    senha_hash = Column(String(255), nullable=False)
+    perfil = Column(String(20))                # Conservador / Moderado / Arrojado
+    perfil_sugerido = Column(String(20))
+    pontuacao = Column(Integer)
+    respostas = Column(Text)                   # JSON {id_pergunta: indice}
+    criado_em = Column(DateTime, default=agora_utc)
+    perfil_atualizado_em = Column(DateTime)
+
+
+class Sessao(Base):
+    """Login ativo. Guarda só o SHA-256 do token: um vazamento do banco não
+    entrega sessões utilizáveis."""
+
+    __tablename__ = "sessoes"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    usuario_id = Column(
+        Integer, ForeignKey("usuarios.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    criado_em = Column(DateTime, default=agora_utc)
+    expira_em = Column(DateTime, nullable=False)
 
 
 class SocialPost(Base):

@@ -251,11 +251,25 @@ class TestMapeamentoLabels:
         ("5 stars", "positivo"),
         ("POSITIVE", "positivo"),
         ("NEGATIVE", "negativo"),
+        ("neutral", "neutro"),
+        ("Bullish", "positivo"),
+        ("Bearish", "negativo"),
         ("", "neutro"),
         (None, "neutro"),
     ])
     def test_traduz_label_do_modelo(self, label, esperado):
         assert svc_sentimento.mapear_estrela_para_sentimento(label) == esperado
+
+    def test_label_numerado_usa_o_id2label_do_modelo(self):
+        # LABEL_2 não pode ser lido como "2 estrelas" (negativo).
+        id2label = {0: "negative", 1: "neutral", 2: "positive"}
+        assert svc_sentimento.mapear_label("LABEL_2", id2label) == "positivo"
+        assert svc_sentimento.mapear_label("LABEL_0", id2label) == "negativo"
+        assert svc_sentimento.mapear_label("LABEL_1", id2label) == "neutro"
+
+    def test_label_numerado_desconhecido_vira_neutro(self):
+        assert svc_sentimento.mapear_label("LABEL_2") == "neutro"
+        assert svc_sentimento.mapear_label("LABEL_X", {0: "x"}) == "neutro"
 
 
 # ── Métricas de correlação ──────────────────────────────────────────────────

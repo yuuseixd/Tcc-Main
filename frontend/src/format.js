@@ -52,16 +52,19 @@ export function dataCurta(iso) {
   }).format(d);
 }
 
-export const moeda = (v) =>
-  v == null ? "—" : `$${Number(v).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+/** Número no padrão brasileiro: 86.453,74. */
+export const numero = (v, casas = 0) =>
+  v == null || Number.isNaN(Number(v))
+    ? "—"
+    : Number(v).toLocaleString("pt-BR", {
+        minimumFractionDigits: casas,
+        maximumFractionDigits: casas,
+      });
 
-export const moedaCurta = (v) =>
-  v == null ? "—" : `$${Number(v).toLocaleString("en-US", {
-    maximumFractionDigits: 0,
-  })}`;
+export const moeda = (v, casas = 2) =>
+  v == null ? "—" : `US$ ${numero(v, casas)}`;
+
+export const moedaCurta = (v) => (v == null ? "—" : `US$ ${numero(v, 0)}`);
 
 export const percentual = (v, casas = 2) =>
-  v == null ? "—" : `${v > 0 ? "+" : ""}${Number(v).toFixed(casas)}%`;
+  v == null ? "—" : `${v > 0 ? "+" : ""}${numero(v, casas)}%`;

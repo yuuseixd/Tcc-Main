@@ -58,14 +58,21 @@ logger = logging.getLogger("sentcrypto.simulacao")
 MAX_DIAS_SIMULACAO = 180
 
 
-def _normalizar_perfis(perfis: list[str]) -> list[str]:
-    """``@perfil`` em minúsculas, do jeito que dá pra comparar com o banco."""
+def _normalizar_perfis(perfis: list[str], fonte: str = "X") -> list[str]:
+    """Nomes em minúsculas, sem ``@`` (X) ou ``r/`` (Reddit), para comparar com o banco."""
     vistos: list[str] = []
     for p in perfis:
-        nome = (p or "").strip().lstrip("@").lower()
+        nome = (p or "").strip().lower()
+        nome = nome[2:] if fonte == "Reddit" and nome.startswith("r/") else nome
+        nome = nome.lstrip("@")
         if nome and nome not in vistos:
             vistos.append(nome)
     return vistos
+
+
+def _prefixo_autor(fonte: str) -> str:
+    """Como o autor é gravado em ``social_posts``: ``@perfil`` ou ``r/sub``."""
+    return "r/" if fonte == "Reddit" else "@"
 
 
 def _resultado_vazio(
@@ -102,17 +109,22 @@ def simular_investimento(
     percentual_queda_compra: float,
     percentual_perda_aceita: float,
     modo: str = "fomo",
+    fonte: str = "X",
 ) -> dict:
     """Roda o backtest e devolve trades, série de patrimônio e resumo.
 
-    ``modo="fomo"`` (padrão) exige posts já coletados dos ``perfis`` e só
-    compra com sentimento positivo. ``modo="flat"`` ignora sentimento e
-    ``perfis`` por completo — compra e vende só pela variação do preço.
+    ``modo="fomo"`` (padrão) exige posts já coletados e só compra com
+    sentimento positivo. Com ``fonte="X"`` os ``perfis`` são obrigatórios;
+    com ``fonte="Reddit"`` são subreddits e, se vazios, vale todo o Reddit
+    da moeda. ``modo="flat"`` ignora sentimento e ``perfis`` por completo —
+    compra e vende só pela variação do preço.
     """
     moeda_u = moeda.upper()
     modo = modo if modo in MODOS_VALIDOS else "fomo"
+    fonte = "Reddit" if fonte == "Reddit" else "X"
     parametros = {
         "modo": modo,
+        "fonte": fonte,
         "capital_inicial": capital_inicial,
         "valor_por_compra": valor_por_compra,
         "percentual_lucro_venda": percentual_lucro_venda,
@@ -123,31 +135,36 @@ def simular_investimento(
     agrupado: dict = {}
 
     if modo == "fomo":
-        perfis_norm = _normalizar_perfis(perfis)
-        if not perfis_norm:
+        perfis_norm = _normalizar_perfis(perfis, fonte)
+        if fonte == "X" and not perfis_norm:
             return _resultado_vazio(
                 moeda_u, perfis, inicio, fim, parametros,
                 "Informe ao menos um perfil do X.",
             )
 
-        posts = (
-            db.query(SocialPost)
-            .filter(
-                SocialPost.moeda == moeda_u,
-                SocialPost.fonte == "X",
-                SocialPost.sentimento != NULO,
-                func.lower(SocialPost.autor).in_([f"@{p}" for p in perfis_norm]),
-                SocialPost.timestamp_post >= inicio,
-                SocialPost.timestamp_post <= fim,
-            )
-            .order_by(SocialPost.timestamp_post.asc())
-            .all()
+        consulta = db.query(SocialPost).filter(
+            SocialPost.moeda == moeda_u,
+            SocialPost.fonte == fonte,
+            SocialPost.sentimento != NULO,
+            SocialPost.timestamp_post >= inicio,
+            SocialPost.timestamp_post <= fim,
         )
+        if perfis_norm:
+            prefixo = _prefixo_autor(fonte)
+            consulta = consulta.filter(
+                func.lower(SocialPost.autor).in_(
+                    [f"{prefixo}{p}" for p in perfis_norm]
+                )
+            )
+        posts = consulta.order_by(SocialPost.timestamp_post.asc()).all()
 
         if not posts:
+            origem = "desses perfis" if fonte == "X" else (
+                "desses subreddits" if perfis_norm else "do Reddit"
+            )
             return _resultado_vazio(
                 moeda_u, perfis, inicio, fim, parametros,
-                "Nenhum post desses perfis foi encontrado no período. Colete "
+                f"Nenhum post {origem} foi encontrado no período. Colete "
                 "com 'Analisar e salvar' antes de simular.",
             )
 
@@ -170,11 +187,13 @@ def simular_investimento(
             "Não foi possível obter preços da Binance para esse período.",
         )
 
-    return _rodar_backtest(
+    resultado = _rodar_backtest(
         moeda_u, perfis, candles, agrupado, capital_inicial,
         valor_por_compra, percentual_lucro_venda, percentual_queda_compra,
         percentual_perda_aceita, modo,
     )
+    resultado["parametros"]["fonte"] = fonte
+    return resultado
 
 
 def _rodar_backtest(

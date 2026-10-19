@@ -1,9 +1,11 @@
 """Análise de sentimento com BERT e as regras de classificação do projeto.
 
-O modelo usado (``nlptown/bert-base-multilingual-uncased-sentiment``) devolve
-uma nota de 1 a 5 estrelas. Este módulo traduz essa nota para o vocabulário do
-projeto (positivo / neutro / negativo) e para um índice numérico 0–1 usado nos
-gráficos.
+O modelo padrão (``cardiffnlp/twitter-roberta-base-sentiment-latest``, treinado
+em tweets) devolve positive / neutral / negative. Este módulo traduz o rótulo de
+qualquer modelo para o vocabulário do projeto (positivo / neutro / negativo) e
+para um índice numérico 0–1 usado nos gráficos. O modelo anterior (nlptown,
+estrelas de 1 a 5) foi trocado por enviesar a maioria dos posts para negativo;
+ver ``tools/avaliar_modelos.py``.
 """
 
 import logging
@@ -67,32 +69,52 @@ def modelo_carregado() -> bool:
 # ── Tradução das saídas do modelo ───────────────────────────────────────────
 
 
-def mapear_estrela_para_sentimento(label: str) -> str:
-    """Converte o label do modelo (ex.: ``'4 stars'``) em positivo/neutro/negativo.
+def mapear_label(label: str, id2label: dict | None = None) -> str:
+    """Traduz o label de qualquer modelo para positivo/neutro/negativo.
 
-    A extração usa o primeiro dígito do label em vez de ``'1' in label``, que
-    daria falso positivo em labels como ``'1 star'`` vs ``'11'`` e é frágil se
-    o modelo mudar o formato.
+    Cada modelo usa uma convenção: estrelas (``'4 stars'``), ``positive``/
+    ``negative``/``neutral``, ``Bullish``/``Bearish`` (modelos de cripto) ou
+    ``LABEL_0/1/2``, que só faz sentido com o ``id2label`` do próprio modelo.
+    Palavras vêm antes dos dígitos para que ``LABEL_2`` não seja lido como
+    "2 estrelas". Um label desconhecido vira neutro em vez de gerar viés.
     """
     if not label:
         return NEUTRO
 
-    match = re.search(r"\d+", str(label))
-    if not match:
-        # Alguns modelos devolvem POSITIVE/NEGATIVE em vez de estrelas.
-        texto = str(label).upper()
-        if "POS" in texto:
-            return POSITIVO
-        if "NEG" in texto:
-            return NEGATIVO
-        return NEUTRO
+    texto = str(label).upper()
 
-    estrelas = int(match.group())
-    if estrelas <= 2:
-        return NEGATIVO
-    if estrelas == 3:
+    if texto.startswith("LABEL_"):
+        if not id2label:
+            return NEUTRO
+        try:
+            texto = str(id2label.get(int(texto.split("_")[1]), "")).upper()
+        except (ValueError, IndexError):
+            return NEUTRO
+
+    if "NEUTR" in texto:
         return NEUTRO
-    return POSITIVO
+    if "POS" in texto or "BULL" in texto:
+        return POSITIVO
+    if "NEG" in texto or "BEAR" in texto:
+        return NEGATIVO
+
+    # Estrelas: o primeiro número do label, em vez de ``'1' in label``, que
+    # daria falso positivo em ``'1 star'`` vs ``'11'``.
+    match = re.search(r"\d+", texto)
+    if match:
+        estrelas = int(match.group())
+        if estrelas <= 2:
+            return NEGATIVO
+        if estrelas == 3:
+            return NEUTRO
+        return POSITIVO
+
+    return NEUTRO
+
+
+def mapear_estrela_para_sentimento(label: str) -> str:
+    """Nome antigo de :func:`mapear_label`, mantido por compatibilidade."""
+    return mapear_label(label)
 
 
 def sentimento_para_indice(sentimento: str) -> float:
@@ -170,7 +192,8 @@ def analisar_texto(texto: str) -> dict:
         raise ValueError("Texto vazio.")
 
     resultado = _pipeline(texto, truncation=True, max_length=MAX_TOKENS)[0]
-    sentimento = mapear_estrela_para_sentimento(resultado["label"])
+    id2label = getattr(_pipeline.model.config, "id2label", None)
+    sentimento = mapear_label(resultado["label"], id2label)
 
     return {
         "sentimento": sentimento,

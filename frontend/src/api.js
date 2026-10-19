@@ -19,13 +19,51 @@ export class ApiError extends Error {
   }
 }
 
+const CHAVE_TOKEN = "senty_token";
+let tokenAtual = null;
+let aoPerderSessao = null;
+
+try {
+  tokenAtual = localStorage.getItem(CHAVE_TOKEN);
+} catch {
+  /* navegador sem armazenamento: o login vale só nesta aba */
+}
+
+/** Guarda (ou apaga, com null) o token da sessão e passa a enviá-lo nas chamadas. */
+export function definirToken(token) {
+  tokenAtual = token || null;
+  try {
+    if (tokenAtual) localStorage.setItem(CHAVE_TOKEN, tokenAtual);
+    else localStorage.removeItem(CHAVE_TOKEN);
+  } catch {
+    /* ignora */
+  }
+}
+
+export const temToken = () => Boolean(tokenAtual);
+
+/** Registra o que fazer quando o servidor recusa o token (sessão expirada). */
+export function aoPerderSessaoFazer(callback) {
+  aoPerderSessao = callback;
+}
+
 async function request(caminho, { method = "GET", body, signal } = {}) {
+  const cabecalhos = {};
+  if (body) cabecalhos["Content-Type"] = "application/json";
+  if (tokenAtual) cabecalhos.Authorization = `Bearer ${tokenAtual}`;
+
   const resposta = await fetch(`${API_URL}${caminho}`, {
     method,
     signal,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(cabecalhos).length ? cabecalhos : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+
+  // 401 com token enviado = sessão expirada ou revogada. No login, 401 é só
+  // "senha errada" e não deve derrubar nada.
+  if (resposta.status === 401 && tokenAtual && !caminho.startsWith("/auth/login")) {
+    aoPerderSessao?.();
+  }
 
   // Respostas de erro do FastAPI trazem "detail", que pode ser texto ou a
   // lista de erros de validação do Pydantic.
@@ -61,6 +99,20 @@ const qs = (params) => {
 export const api = {
   saude: (signal) => request("/", { signal }),
 
+  cadastrar: (nome, email, senha) =>
+    request("/auth/cadastro", { method: "POST", body: { nome, email, senha } }),
+  entrar: (email, senha) =>
+    request("/auth/login", { method: "POST", body: { email, senha } }),
+  sair: () => request("/auth/logout", { method: "POST" }),
+  eu: (signal) => request("/auth/eu", { signal }),
+  questionario: (signal) => request("/perfil/questionario", { signal }),
+  enviarQuestionario: (respostas) =>
+    request("/perfil/questionario", { method: "POST", body: { respostas } }),
+  confirmarPerfil: (perfil) =>
+    request("/perfil/confirmar", { method: "POST", body: { perfil } }),
+
+  riscoMoedas: (signal) => request("/risco-moedas", { signal }),
+
   sentimento: (moeda, signal) =>
     request(`/sentimento${qs({ moeda })}`, { signal }),
 
@@ -84,6 +136,9 @@ export const api = {
 
   correlacao: (moeda, fonte, signal) =>
     request(`/correlacao${qs({ moeda, fonte })}`, { signal }),
+
+  comparacaoFontes: (moeda, signal) =>
+    request(`/comparacao-fontes${qs({ moeda })}`, { signal }),
 
   syncBinance: (moeda, dias = 7) =>
     request(`/sync-binance${qs({ moeda, dias })}`, { method: "POST" }),

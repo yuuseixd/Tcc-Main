@@ -16,7 +16,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -34,19 +34,27 @@ from config import (
     reddit_autenticado,
 )
 from db import Base, engine, get_db
-from models import MarketPoint, SocialPost
+from models import MarketPoint, SocialPost, Usuario
 from schemas import (
+    CadastroRequest,
     ColetaRedditRequest,
     ColetaXRequest,
     FeedXRequest,
+    LoginRequest,
     LoginXRequest,
+    PerfilRequest,
+    QuestionarioRequest,
     SimulacaoInvestimentoRequest,
     TextoParaAnalise,
 )
+from services import comparacao as svc_comparacao
+from services import contas as svc_contas
+from services import perfil as svc_perfil
 from services import correlacao as svc_correlacao
 from services import mercado as svc_mercado
 from services import posts as svc_posts
 from services import relatorios as svc_relatorios
+from services import risco as svc_risco
 from services import sentimento as svc_sentimento
 from services import simulacao as svc_simulacao
 from utils.tempo import (
@@ -142,6 +150,47 @@ def exigir_admin(x_admin_token: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Token administrativo inválido.")
 
 
+limitador_login = svc_contas.LimitadorTentativas(maximo=5, janela_s=600)
+
+
+def _token_do_cabecalho(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    esquema, _, token = authorization.partition(" ")
+    return token.strip() if esquema.lower() == "bearer" and token.strip() else None
+
+
+def usuario_atual(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Usuario:
+    """Exige login: devolve o usuário da sessão ou responde 401.
+
+    A Visão geral é a única área aberta; as demais rotas usam esta dependência
+    (no front-end o bloqueio é só conforto, quem protege de verdade é o servidor).
+    """
+    usuario = svc_contas.usuario_da_sessao(db, _token_do_cabecalho(authorization))
+    if usuario is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Entre na sua conta para usar este recurso.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return usuario
+
+
+def _usuario_json(u: Usuario) -> dict:
+    return {
+        "id": u.id,
+        "nome": u.nome,
+        "email": u.email,
+        "perfil": u.perfil,
+        "perfil_sugerido": u.perfil_sugerido,
+        "pontuacao": u.pontuacao,
+        "criado_em": para_iso_utc(u.criado_em) if u.criado_em else None,
+    }
+
+
 def _buscar_klines_ou_502(simbolo: str, **kwargs) -> list:
     try:
         return svc_mercado.buscar_klines(simbolo, **kwargs)
@@ -222,6 +271,106 @@ def login_x(body: LoginXRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Contas e perfil de investimento
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/auth/cadastro", tags=["contas"], status_code=201)
+def cadastrar(body: CadastroRequest, db: Session = Depends(get_db)):
+    """Cria a conta e já entra nela."""
+    try:
+        usuario = svc_contas.criar_usuario(db, body.nome, body.email, body.senha)
+    except svc_contas.ErroConta as e:
+        raise HTTPException(status_code=e.status, detail=e.mensagem) from e
+    token = svc_contas.criar_sessao(db, usuario)
+    logger.info("Conta criada (id %s).", usuario.id)
+    return {"token": token, "usuario": _usuario_json(usuario)}
+
+
+@app.post("/auth/login", tags=["contas"])
+def entrar(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    ip = request.client.host if request.client else "?"
+    chave = f"{(body.email or '').strip().lower()}|{ip}"
+    if limitador_login.bloqueado(chave):
+        raise HTTPException(
+            status_code=429,
+            detail="Muitas tentativas. Aguarde alguns minutos e tente de novo.",
+        )
+    usuario = svc_contas.autenticar(db, body.email, body.senha)
+    if usuario is None:
+        limitador_login.registrar_falha(chave)
+        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+    limitador_login.limpar(chave)
+    return {
+        "token": svc_contas.criar_sessao(db, usuario),
+        "usuario": _usuario_json(usuario),
+    }
+
+
+@app.post("/auth/logout", tags=["contas"])
+def sair(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    svc_contas.encerrar_sessao(db, _token_do_cabecalho(authorization))
+    return {"sucesso": True}
+
+
+@app.get("/auth/eu", tags=["contas"])
+def quem_sou_eu(usuario: Usuario = Depends(usuario_atual)):
+    return _usuario_json(usuario)
+
+
+@app.get("/perfil/questionario", tags=["perfil"])
+def questionario():
+    """Perguntas e opções do questionário (uma única fonte para o front)."""
+    return {
+        "perguntas": svc_perfil.PERGUNTAS,
+        "eixos": svc_perfil.EIXOS,
+        "fontes": svc_perfil.FONTES,
+        "perfis": [
+            {"nome": nome, "descricao": svc_perfil.DESCRICAO_PERFIL[nome]}
+            for nome in svc_perfil.PERFIS
+        ],
+    }
+
+
+@app.post("/perfil/questionario", tags=["perfil"])
+def responder_questionario(
+    body: QuestionarioRequest,
+    usuario: Usuario = Depends(usuario_atual),
+    db: Session = Depends(get_db),
+):
+    """Calcula o perfil sugerido. A pessoa ainda precisa confirmá-lo."""
+    try:
+        resultado = svc_perfil.calcular_perfil(body.respostas)
+    except svc_perfil.ErroQuestionario as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    usuario.perfil_sugerido = resultado["perfil"]
+    usuario.pontuacao = resultado["pontuacao"]
+    usuario.respostas = svc_perfil.serializar_respostas(body.respostas)
+    db.commit()
+    return resultado
+
+
+@app.post("/perfil/confirmar", tags=["perfil"])
+def confirmar_perfil(
+    body: PerfilRequest,
+    usuario: Usuario = Depends(usuario_atual),
+    db: Session = Depends(get_db),
+):
+    """Grava o perfil escolhido (o sugerido ou outro que a pessoa prefira)."""
+    try:
+        usuario.perfil = svc_perfil.validar_perfil(body.perfil)
+    except svc_perfil.ErroQuestionario as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    usuario.perfil_atualizado_em = agora_utc()
+    db.commit()
+    return _usuario_json(usuario)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Preço e sentimento de mercado
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -247,6 +396,12 @@ def sentimento_atual(moeda: str = Query("BTC")):
         "timestamp_candle": para_iso_utc(ultimo.timestamp),
         "ultimo_update": para_iso_utc(agora_utc()),
     }
+
+
+@app.get("/risco-moedas", tags=["sentimento"])
+async def risco_moedas():
+    """Volatilidade e queda máxima de cada moeda nos últimos 365 dias (Binance)."""
+    return await run_in_threadpool(svc_risco.risco_das_moedas)
 
 
 @app.get("/historico-sentimento", tags=["historico"])
@@ -343,7 +498,7 @@ def historico_db(
     }
 
 
-@app.post("/sync-binance", tags=["historico"])
+@app.post("/sync-binance", tags=["historico"], dependencies=[Depends(usuario_atual)])
 def sync_binance(
     moeda: str = Query("BTC"),
     dias: int = Query(7, ge=1, le=30),
@@ -442,7 +597,7 @@ def historico_social(
     return {"moeda": moeda_u, "fonte": fonte_n, "pontos": pontos}
 
 
-@app.get("/posts-por-hora", tags=["historico"])
+@app.get("/posts-por-hora", tags=["historico"], dependencies=[Depends(usuario_atual)])
 def posts_por_hora(
     moeda: str = Query("BTC"),
     fonte: str = Query("X"),
@@ -550,12 +705,22 @@ async def correlacao_sentimento_preco(
     )
 
 
+@app.get("/comparacao-fontes", tags=["correlacao"], dependencies=[Depends(usuario_atual)])
+async def comparacao_fontes(
+    moeda: str = Query("BTC"),
+    db: Session = Depends(get_db),
+):
+    """Compara X e Reddit para a mesma moeda: correlação, concordância e série horária."""
+    moeda_u = validar_moeda(moeda)
+    return await run_in_threadpool(svc_comparacao.comparar_fontes, db, moeda_u)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Simulação de investimento
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@app.post("/simulacao/investimento", tags=["simulacao"])
+@app.post("/simulacao/investimento", tags=["simulacao"], dependencies=[Depends(usuario_atual)])
 async def simular_investimento(
     body: SimulacaoInvestimentoRequest, db: Session = Depends(get_db)
 ):
@@ -591,7 +756,7 @@ async def simular_investimento(
         db, moeda_u, body.perfis or [], inicio, fim,
         body.capital_inicial, body.valor_por_compra,
         body.percentual_lucro_venda, body.percentual_queda_compra,
-        body.percentual_perda_aceita, body.modo,
+        body.percentual_perda_aceita, body.modo, body.fonte,
     )
 
 
@@ -600,7 +765,7 @@ async def simular_investimento(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@app.post("/gerar-relatorio", tags=["relatorio"])
+@app.post("/gerar-relatorio", tags=["relatorio"], dependencies=[Depends(usuario_atual)])
 async def gerar_relatorio(
     moeda: str = Query("BTC"),
     fonte: str = Query("X"),
@@ -634,7 +799,7 @@ async def gerar_relatorio(
     }
 
 
-@app.post("/gerar-relatorio-correlacao", tags=["relatorio"])
+@app.post("/gerar-relatorio-correlacao", tags=["relatorio"], dependencies=[Depends(usuario_atual)])
 async def gerar_relatorio_correlacao(
     moeda: str = Query("BTC"),
     fonte: str = Query("X"),
@@ -672,7 +837,7 @@ async def gerar_relatorio_correlacao(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@app.post("/coletar/reddit", tags=["coleta"])
+@app.post("/coletar/reddit", tags=["coleta"], dependencies=[Depends(usuario_atual)])
 async def coletar_reddit(
     body: ColetaRedditRequest, db: Session = Depends(get_db)
 ):
@@ -700,7 +865,7 @@ async def coletar_reddit(
     return resposta
 
 
-@app.post("/coletar/x", tags=["coleta"])
+@app.post("/coletar/x", tags=["coleta"], dependencies=[Depends(usuario_atual)])
 async def coletar_x(body: ColetaXRequest, db: Session = Depends(get_db)):
     """Coleta tweets dos perfis, classifica com BERT e salva sem duplicar."""
     _exigir_bert()
@@ -721,7 +886,7 @@ async def coletar_x(body: ColetaXRequest, db: Session = Depends(get_db)):
             "perfis_consultados": body.perfis, "avisos": avisos}
 
 
-@app.post("/feed/x", tags=["feed"])
+@app.post("/feed/x", tags=["feed"], dependencies=[Depends(usuario_atual)])
 async def feed_x(body: FeedXRequest):
     """Timeline dos perfis com análise de sentimento, sem gravar no banco.
 
@@ -810,7 +975,7 @@ def _classificar_feed(tweets: list[dict]) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@app.post("/analisar-texto", tags=["sentimento"])
+@app.post("/analisar-texto", tags=["sentimento"], dependencies=[Depends(usuario_atual)])
 async def analisar_texto(body: TextoParaAnalise):
     """Classifica um texto livre com o BERT, sem salvar no banco."""
     _exigir_bert()
