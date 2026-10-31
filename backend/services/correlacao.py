@@ -40,8 +40,14 @@ logger = logging.getLogger("sentcrypto.correlacao")
 # Janelas (em horas) usadas na métrica Return After Sentiment.
 JANELAS_RETORNO = (1, 4, 24)
 
-# Profundidade máxima da janela de preços consultada na Binance.
-MAX_DIAS_HISTORICO = 180
+# Horas com posts separadas por mais que isto viram trechos de consulta
+# independentes na Binance — evita baixar meses de candles entre dois períodos
+# de coleta distantes.
+INTERVALO_MAX_TRECHO = timedelta(days=7)
+
+# Teto de trechos consultados por análise (posts antigos isolados, como os que
+# o modo público do X devolve, viram um trecho cada).
+MAX_TRECHOS_PRECO = 40
 
 
 @dataclass
@@ -112,37 +118,50 @@ def agregar_posts_por_hora(posts: list[SocialPost]) -> dict[str, HoraAgregada]:
 def precos_para_horas(moeda: str, horas_iso: list[str]) -> dict[str, dict]:
     """Busca na Binance os preços das horas informadas.
 
-    A janela consultada acompanha o período dos dados em vez de assumir "as
-    últimas N horas", que só funcionava quando a análise era feita no mesmo dia
-    da coleta. Devolve ``{hora_iso: {preco_abertura, preco_fechamento,
+    As horas são agrupadas em trechos contíguos e cada trecho é consultado à
+    parte. Antes a janela era "do post mais recente para trás, até 180 dias":
+    bastava uma coleta nova para todo o período anterior da pesquisa ficar sem
+    preço. Devolve ``{hora_iso: {preco_abertura, preco_fechamento,
     variacao_pct}}``; horas sem candle simplesmente não aparecem.
     """
     if not horas_iso:
         return {}
 
-    horas = sorted(horas_iso)
-    inicio = datetime.fromisoformat(horas[0])
-    fim = datetime.fromisoformat(horas[-1]) + timedelta(
-        hours=max(JANELAS_RETORNO) + 1
+    folga = timedelta(hours=max(JANELAS_RETORNO) + 1)
+    trechos = _agrupar_em_trechos(
+        sorted(datetime.fromisoformat(h) for h in horas_iso)
     )
-
-    limite_inferior = fim - timedelta(days=MAX_DIAS_HISTORICO)
-    if inicio < limite_inferior:
+    if len(trechos) > MAX_TRECHOS_PRECO:
         logger.info(
-            "Janela de preços limitada a %d dias (posts mais antigos "
-            "ficam sem preço).", MAX_DIAS_HISTORICO,
+            "%d trechos de horas; consultando só os %d mais recentes "
+            "(os demais ficam sem preço).", len(trechos), MAX_TRECHOS_PRECO,
         )
-        inicio = limite_inferior
+        trechos = trechos[-MAX_TRECHOS_PRECO:]
 
-    try:
-        candles = mercado.buscar_klines_intervalo(
-            mercado.simbolo_para(moeda), inicio=inicio, fim=fim, intervalo="1h"
-        )
-    except mercado.ErroBinance as e:
-        logger.warning("Sem dados de preço para %s: %s", moeda, e)
-        return {}
+    simbolo = mercado.simbolo_para(moeda)
+    precos: dict[str, dict] = {}
+    for inicio, fim in trechos:
+        try:
+            candles = mercado.buscar_klines_intervalo(
+                simbolo, inicio=inicio, fim=fim + folga, intervalo="1h"
+            )
+        except mercado.ErroBinance as e:
+            logger.warning("Sem dados de preço para %s: %s", moeda, e)
+            continue
+        precos.update(mercado.mapa_precos_por_hora(candles))
 
-    return mercado.mapa_precos_por_hora(candles)
+    return precos
+
+
+def _agrupar_em_trechos(horas: list[datetime]) -> list[tuple[datetime, datetime]]:
+    """Agrupa horas ordenadas em trechos (início, fim) sem lacunas longas."""
+    trechos: list[tuple[datetime, datetime]] = []
+    for hora in horas:
+        if trechos and hora - trechos[-1][1] <= INTERVALO_MAX_TRECHO:
+            trechos[-1] = (trechos[-1][0], hora)
+        else:
+            trechos.append((hora, hora))
+    return trechos
 
 
 def _direcao_preco(variacao_pct: float | None) -> str | None:
@@ -155,50 +174,52 @@ def _direcao_preco(variacao_pct: float | None) -> str | None:
     return "estavel"
 
 
-def calcular_correlacao(db: Session, moeda: str, fonte: str) -> dict:
+def calcular_correlacao(
+    db: Session,
+    moeda: str,
+    fonte: str,
+    inicio: datetime | None = None,
+    fim: datetime | None = None,
+) -> dict:
     """Calcula todas as métricas de correlação para uma moeda/fonte.
+
+    ``inicio``/``fim`` (opcionais, UTC) limitam os posts considerados ao
+    período escolhido; sem eles a análise cobre todo o banco.
 
     Devolve um dicionário com ``pontos`` (uma entrada por hora com posts) e
     ``resumo`` (contagens e taxa de acerto). É a única fonte de verdade para
     o gráfico, a tabela e o relatório PDF.
     """
     moeda_u = moeda.upper()
+    vazio = {
+        "moeda": moeda_u,
+        "fonte": fonte,
+        "inicio": inicio.isoformat() if inicio else None,
+        "fim": fim.isoformat() if fim else None,
+        "pontos": [],
+        "resumo": _resumo_vazio(),
+    }
 
-    posts = (
-        db.query(SocialPost)
-        .filter(
-            SocialPost.moeda == moeda_u,
-            SocialPost.fonte == fonte,
-            SocialPost.sentimento != NULO,
-        )
-        .order_by(SocialPost.timestamp_post.asc())
-        .all()
+    consulta = db.query(SocialPost).filter(
+        SocialPost.moeda == moeda_u,
+        SocialPost.fonte == fonte,
+        SocialPost.sentimento != NULO,
     )
+    if inicio:
+        consulta = consulta.filter(SocialPost.timestamp_post >= inicio)
+    if fim:
+        consulta = consulta.filter(SocialPost.timestamp_post <= fim)
+    posts = consulta.order_by(SocialPost.timestamp_post.asc()).all()
 
     if not posts:
-        return {
-            "moeda": moeda_u,
-            "fonte": fonte,
-            "pontos": [],
-            "resumo": _resumo_vazio(),
-        }
+        return vazio
 
     agrupado = agregar_posts_por_hora(posts)
     if not agrupado:
-        return {
-            "moeda": moeda_u,
-            "fonte": fonte,
-            "pontos": [],
-            "resumo": _resumo_vazio(),
-        }
+        return vazio
 
     # ── Preços ──────────────────────────────────────────────────────────
     precos = precos_para_horas(moeda_u, list(agrupado.keys()))
-
-    # Lista ordenada de horas + índice reverso: evita o list.index() dentro
-    # do laço, que tornava o cálculo quadrático.
-    horas_ordenadas = sorted(precos.keys())
-    posicao_da_hora = {h: i for i, h in enumerate(horas_ordenadas)}
 
     # ── Métricas por hora ───────────────────────────────────────────────
     pontos = []
@@ -214,9 +235,7 @@ def calcular_correlacao(db: Session, moeda: str, fonte: str) -> dict:
         preco_abertura = preco_info.get("preco_abertura")
         preco_fechamento = preco_info.get("preco_fechamento")
 
-        retornos = _calcular_retornos(
-            chave, preco_abertura, precos, horas_ordenadas, posicao_da_hora
-        )
+        retornos = _calcular_retornos(chave, preco_abertura, precos)
 
         direcao_sent = grupo.direcao
         direcao_preco = _direcao_preco(variacao_1h)
@@ -290,29 +309,30 @@ def calcular_correlacao(db: Session, moeda: str, fonte: str) -> dict:
         "amostra_suficiente": total_comparavel >= 30,
     }
 
-    return {"moeda": moeda_u, "fonte": fonte, "pontos": pontos, "resumo": resumo}
+    return {**vazio, "pontos": pontos, "resumo": resumo}
 
 
 def _calcular_retornos(
     chave: str,
     preco_base: float | None,
     precos: dict[str, dict],
-    horas_ordenadas: list[str],
-    posicao_da_hora: dict[str, int],
 ) -> dict[int, float | None]:
-    """Return After Sentiment nas janelas configuradas."""
-    retornos: dict[int, float | None] = {j: None for j in JANELAS_RETORNO}
+    """Return After Sentiment nas janelas configuradas.
 
-    idx = posicao_da_hora.get(chave)
-    if idx is None or not preco_base:
+    O preço futuro é buscado pela hora exata (``t + janela``), não pela
+    posição na lista de candles: com os preços vindo em trechos separados,
+    "N posições à frente" poderia cair num trecho de outra semana.
+    """
+    retornos: dict[int, float | None] = {j: None for j in JANELAS_RETORNO}
+    if not preco_base:
         return retornos
 
+    hora = datetime.fromisoformat(chave)
     for janela in JANELAS_RETORNO:
-        alvo = idx + janela
-        if alvo < len(horas_ordenadas):
-            preco_futuro = precos[horas_ordenadas[alvo]]["preco_fechamento"]
+        futuro = precos.get((hora + timedelta(hours=janela)).isoformat())
+        if futuro:
             retornos[janela] = round(
-                (preco_futuro - preco_base) / preco_base * 100, 4
+                (futuro["preco_fechamento"] - preco_base) / preco_base * 100, 4
             )
 
     return retornos

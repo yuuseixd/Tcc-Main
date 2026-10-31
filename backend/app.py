@@ -661,6 +661,24 @@ def _janela_recente(agrupado: dict, dias: int = DIAS_JANELA_PADRAO) -> dict:
     return {k: g for k, g in agrupado.items() if g.timestamp >= corte}
 
 
+def _parse_periodo(
+    data_inicio: str | None, data_fim: str | None
+) -> tuple[datetime | None, datetime | None]:
+    """Valida o período opcional das análises (qualquer um dos lados pode faltar)."""
+    inicio = parse_data_inicio(data_inicio)
+    fim = parse_data_fim(data_fim)
+    if (data_inicio and inicio is None) or (data_fim and fim is None):
+        raise HTTPException(
+            status_code=400, detail="Data inválida. Use o formato AAAA-MM-DD."
+        )
+    if inicio and fim and inicio > fim:
+        raise HTTPException(
+            status_code=400,
+            detail="Período inválido: a data inicial é posterior à final.",
+        )
+    return inicio, fim
+
+
 def _parse_hora_obrigatoria(hora: str) -> datetime:
     dt = parse_data_inicio(hora)
     if dt is None:
@@ -700,14 +718,17 @@ def _posts_da_hora(
 async def correlacao_sentimento_preco(
     moeda: str = Query("BTC"),
     fonte: str = Query("X"),
+    data_inicio: str = Query(None, description="Data ISO (ex: 2026-03-01)"),
+    data_fim: str = Query(None, description="Data ISO (ex: 2026-03-03)"),
     db: Session = Depends(get_db),
 ):
     """Compara o sentimento social com a variação de preço, hora a hora."""
     moeda_u = validar_moeda(moeda)
     fonte_n = validar_fonte(fonte)
+    inicio, fim = _parse_periodo(data_inicio, data_fim)
     # A função consulta a Binance (I/O bloqueante) — fora do event loop.
     return await run_in_threadpool(
-        svc_correlacao.calcular_correlacao, db, moeda_u, fonte_n
+        svc_correlacao.calcular_correlacao, db, moeda_u, fonte_n, inicio, fim
     )
 
 
@@ -809,19 +830,26 @@ async def gerar_relatorio(
 async def gerar_relatorio_correlacao(
     moeda: str = Query("BTC"),
     fonte: str = Query("X"),
+    data_inicio: str = Query(None, description="Sem datas: relatório completo"),
+    data_fim: str = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Gera o PDF de correlação sentimento x preço."""
+    """Gera o PDF de correlação sentimento x preço (do período ou completo)."""
     moeda_u = validar_moeda(moeda)
     fonte_n = validar_fonte(fonte)
+    inicio, fim = _parse_periodo(data_inicio, data_fim)
 
     dados = await run_in_threadpool(
-        svc_correlacao.calcular_correlacao, db, moeda_u, fonte_n
+        svc_correlacao.calcular_correlacao, db, moeda_u, fonte_n, inicio, fim
     )
     if not dados["pontos"]:
         raise HTTPException(
             status_code=404,
-            detail="Nenhum post analisado ainda. Faça uma coleta antes.",
+            detail=(
+                "Nenhum post analisado nesse período."
+                if inicio or fim
+                else "Nenhum post analisado ainda. Faça uma coleta antes."
+            ),
         )
 
     caminho = await run_in_threadpool(

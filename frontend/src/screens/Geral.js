@@ -87,7 +87,7 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
       if (!foiCancelada(e)) setPreco(null);
     }
     try {
-      setResumo((await api.correlacao(moeda, fonte, signal)).resumo);
+      setResumo((await api.correlacao(moeda, fonte, dataInicio, dataFim, signal)).resumo);
     } catch (e) {
       if (!foiCancelada(e)) setResumo(null);
     }

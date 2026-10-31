@@ -93,8 +93,12 @@ function FonteView({
   const [feedCarregando, setFeedCarregando] = useState(false);
   const [feedDe, setFeedDe] = useState("");
   const [feedAte, setFeedAte] = useState("");
-  const [gerandoPdf, setGerandoPdf] = useState(false);
+  // Período da análise: filtra o gráfico, a tabela e o "PDF do período".
+  const [corrDe, setCorrDe] = useState("");
+  const [corrAte, setCorrAte] = useState("");
+  const [gerandoPdf, setGerandoPdf] = useState(null);
   const abortar = useRef(null);
+  const temPeriodo = Boolean(corrDe || corrAte);
 
   const carregarCorr = useCallback(async () => {
     abortar.current?.abort();
@@ -102,13 +106,13 @@ function FonteView({
     abortar.current = controle;
     setCarregando(true);
     try {
-      setCorr(await api.correlacao(moeda, fonte, controle.signal));
+      setCorr(await api.correlacao(moeda, fonte, corrDe, corrAte, controle.signal));
     } catch (e) {
       if (!foiCancelada(e)) setCorr(null);
     } finally {
       if (abortar.current === controle) setCarregando(false);
     }
-  }, [moeda, fonte]);
+  }, [moeda, fonte, corrDe, corrAte]);
 
   useEffect(() => {
     carregarCorr();
@@ -135,20 +139,20 @@ function FonteView({
         notify.ok(`${silencioso ? "[Auto] " : ""}${dados.mensagem}`);
         notify.aviso(dados.avisos?.length ? dados.avisos.join(" · ") : null);
         carregarCorr();
+        atualizarSaude?.();
       } catch (e) {
         if (!silencioso) {
           notify.erro(
             e instanceof ApiError
-        atualizarSaude?.();
               ? `Falha na coleta: ${e.message}`
               : "Falha ao coletar. Verifique o servidor.",
           );
         }
+        atualizarSaude?.();
       } finally {
         if (!silencioso) setColetando(false);
       }
     },
-        atualizarSaude?.();
     [ehX, moeda, perfisX, notify, carregarCorr, atualizarSaude],
   );
 
@@ -182,24 +186,28 @@ function FonteView({
       notify.erro(`Falha ao carregar o feed: ${e.message}`);
     } finally {
       setFeedCarregando(false);
+      atualizarSaude?.();
     }
   };
 
-  const gerarPdf = async () => {
-      atualizarSaude?.();
+  // tipo "periodo" usa as datas da análise; "completo" ignora o filtro.
+  const gerarPdf = async (tipo) => {
     if (gerandoPdf) return;
-    setGerandoPdf(true);
+    setGerandoPdf(tipo);
     try {
-      const info = await api.gerarRelatorioCorrelacao(moeda, fonte);
+      const info = tipo === "periodo"
+        ? await api.gerarRelatorioCorrelacao(moeda, fonte, corrDe, corrAte)
+        : await api.gerarRelatorioCorrelacao(moeda, fonte);
       window.open(`${API_URL}${info.url}`, "_blank", "noopener");
       notify.ok(`Relatório salvo: ${info.arquivo}`);
     } catch (e) {
       notify.erro(`Falha ao gerar o PDF: ${e.message}`);
     } finally {
-      setGerandoPdf(false);
+      setGerandoPdf(null);
     }
   };
 
+  const statusX = estadoColetaX(twitterOk, xColeta);
   const r = corr?.resumo;
   const pontos = corr?.pontos || [];
   const comVariacao = pontos.filter((p) => p.variacao_preco != null);
@@ -207,7 +215,6 @@ function FonteView({
   const limitePreco = Math.max(
     0.5,
     Math.ceil(Math.max(0, ...comVariacao.map((p) => Math.abs(p.variacao_preco))) * 2) / 2,
-  const statusX = estadoColetaX(twitterOk, xColeta);
   );
 
   return (
@@ -307,17 +314,41 @@ function FonteView({
           </div>
           <div className="btns">
             {carregando && <Spinner />}
-            <button className="btn primary sm" type="button" onClick={gerarPdf}
-              disabled={gerandoPdf || pontos.length === 0}>
-              {gerandoPdf ? "Gerando..." : "Gerar PDF"}
+            <button className="btn primary sm" type="button" onClick={() => gerarPdf("periodo")}
+              disabled={Boolean(gerandoPdf) || !temPeriodo || pontos.length === 0}
+              title={temPeriodo ? "PDF apenas do período selecionado" : "Escolha um período abaixo"}>
+              {gerandoPdf === "periodo" ? "Gerando..." : "PDF do período"}
+            </button>
+            <button className="btn sm" type="button" onClick={() => gerarPdf("completo")}
+              disabled={Boolean(gerandoPdf)} title="PDF com toda a análise salva no banco">
+              {gerandoPdf === "completo" ? "Gerando..." : "PDF completo"}
             </button>
           </div>
         </div>
 
+        <div className="btns">
+          <label className="hint" htmlFor={`c-de-${fonte}`}>Período da análise: de</label>
+          <input id={`c-de-${fonte}`} type="date" className="sel" value={corrDe}
+            max={corrAte || undefined} onChange={(e) => setCorrDe(e.target.value)} />
+          <label className="hint" htmlFor={`c-ate-${fonte}`}>até</label>
+          <input id={`c-ate-${fonte}`} type="date" className="sel" value={corrAte}
+            min={corrDe || undefined} onChange={(e) => setCorrAte(e.target.value)} />
+          {temPeriodo && (
+            <button className="btn sm" type="button"
+              onClick={() => { setCorrDe(""); setCorrAte(""); }}>
+              Limpar datas
+            </button>
+          )}
+        </div>
+
         {pontos.length === 0 ? (
           <Vazio
-            titulo={carregando ? "Carregando..." : `Sem posts de ${fonte} para ${moeda}`}
-            texto={carregando ? undefined : "Colete posts acima para ver a correlação."}
+            titulo={carregando ? "Carregando..."
+              : temPeriodo ? `Sem posts de ${fonte} nesse período`
+              : `Sem posts de ${fonte} para ${moeda}`}
+            texto={carregando ? undefined
+              : temPeriodo ? "Ajuste as datas ou gere o PDF completo."
+              : "Colete posts acima para ver a correlação."}
           />
         ) : (
           <>

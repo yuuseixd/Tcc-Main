@@ -280,11 +280,15 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
     """Monta o PDF de correlação a partir do resultado de ``calcular_correlacao``."""
     moeda = dados["moeda"]
     fonte = dados["fonte"]
-    pontos = dados["pontos"]
     resumo = dados["resumo"]
+    # Horas sem cotação (ex.: posts antigos que o modo público do X devolve)
+    # não têm preço, variação nem retorno — só poluíam a tabela com "-".
+    pontos = [p for p in dados["pontos"] if p["preco_abertura"] is not None]
+    sem_preco = len(dados["pontos"]) - len(pontos)
+    periodo = _rotulo_periodo(dados.get("inicio"), dados.get("fim"))
 
     pdf = SentCryptoPDF(
-        subtitulo=f"{moeda}/USDT  ·  {fonte}  ·  Correlação Sentimento x Preço"
+        subtitulo=f"{moeda}/USDT  ·  {fonte}  ·  {periodo}"
     )
     pdf.add_page()
 
@@ -342,14 +346,21 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
     pdf.ln(6)
 
     # ── 4. Tabela detalhada ──
+    sufixo = "completo" if not (dados.get("inicio") or dados.get("fim")) else "periodo"
+    nome = (
+        f"sentcrypto_{moeda}_{fonte}_correlacao_{sufixo}_"
+        f"{datetime.now():%Y%m%d_%Hh%M}.pdf"
+    )
     if not pontos:
-        pdf.paragrafo(["Nenhuma hora com posts relevantes para detalhar."])
-        return _salvar(
-            pdf,
-            f"sentcrypto_{moeda}_{fonte}_correlacao_{datetime.now():%Y%m%d_%Hh%M}.pdf",
-        )
+        pdf.paragrafo(["Nenhuma hora com cotação disponível para detalhar."])
+        return _salvar(pdf, nome)
 
     pdf.titulo_secao(f"4. Detalhamento por Hora ({len(pontos)} horas)")
+    if sem_preco:
+        pdf.paragrafo([
+            f"{sem_preco} hora(s) com posts mas sem cotação na Binance foram "
+            "omitidas da tabela.",
+        ])
     pdf.ln(2)
 
     larguras = [26, 14, 12, 12, 24, 20, 20, 20, 18]
@@ -371,7 +382,9 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
             pdf.set_text_color(60, 60, 60)
 
         valores = [
-            p["hora"],
+            # Com o ano: no relatório completo a mesma data de anos
+            # diferentes ficava indistinguível ("20/05 14:00").
+            f"{datetime.fromisoformat(p['timestamp']):%d/%m/%y %H:%M}",
             f"{p['sentiment_score']:+.2f}",
             str(p["positivos"]),
             str(p["negativos"]),
@@ -387,8 +400,16 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
 
     pdf.set_text_color(*COR_PRETO)
 
-    nome = f"sentcrypto_{moeda}_{fonte}_correlacao_{datetime.now():%Y%m%d_%Hh%M}.pdf"
     return _salvar(pdf, nome)
+
+
+def _rotulo_periodo(inicio: str | None, fim: str | None) -> str:
+    """Descreve o período do relatório para o cabeçalho."""
+    if not inicio and not fim:
+        return "Análise completa"
+    de = f"{datetime.fromisoformat(inicio):%d/%m/%Y}" if inicio else "início"
+    ate = f"{datetime.fromisoformat(fim):%d/%m/%Y}" if fim else "hoje"
+    return f"Período {de} a {ate}"
 
 
 def _pct(valor: float | None) -> str:

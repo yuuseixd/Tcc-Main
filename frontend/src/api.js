@@ -134,8 +134,11 @@ export const api = {
       { signal },
     ),
 
-  correlacao: (moeda, fonte, signal) =>
-    request(`/correlacao${qs({ moeda, fonte })}`, { signal }),
+  correlacao: (moeda, fonte, dataInicio, dataFim, signal) =>
+    request(
+      `/correlacao${qs({ moeda, fonte, data_inicio: dataInicio, data_fim: dataFim })}`,
+      { signal },
+    ),
 
   comparacaoFontes: (moeda, signal) =>
     request(`/comparacao-fontes${qs({ moeda })}`, { signal }),
@@ -168,8 +171,11 @@ export const api = {
       method: "POST",
     }),
 
-  gerarRelatorioCorrelacao: (moeda, fonte) =>
-    request(`/gerar-relatorio-correlacao${qs({ moeda, fonte })}`, {
+  // Sem datas, o PDF cobre toda a análise salva no banco.
+  gerarRelatorioCorrelacao: (moeda, fonte, dataInicio, dataFim) =>
+    request(`/gerar-relatorio-correlacao${qs({
+      moeda, fonte, data_inicio: dataInicio, data_fim: dataFim,
+    })}`, {
       method: "POST",
     }),
 };
