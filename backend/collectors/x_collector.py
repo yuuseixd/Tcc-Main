@@ -37,6 +37,10 @@ _BROWSER_UA = (
 # Cache: {username: (momento_da_coleta, quantidade_pedida, [tweets], metodo)}
 _CACHE: Dict[str, tuple] = {}
 
+# Resultado da última coleta, exposto em /status/twitter para o dashboard
+# mostrar o estado real em vez de um aviso fixo. "nunca" até a 1ª coleta.
+_ULTIMA_COLETA: Dict = {"estado": "nunca", "momento": None, "metodos": []}
+
 
 # ── Helpers de timestamp ────────────────────────────────────────────────────
 
@@ -398,6 +402,30 @@ def limpar_cache() -> None:
     _CACHE.clear()
 
 
+def status_ultima_coleta() -> Dict:
+    """Estado da última coleta do X.
+
+    ``estado``: ``nunca`` (nada coletado desde que a API subiu), ``ok`` (algum
+    perfil veio pelo twikit autenticado), ``instavel`` (só os métodos de
+    fallback responderam) ou ``falhou`` (nenhum perfil retornou tweets).
+    """
+    return dict(_ULTIMA_COLETA)
+
+
+def _registrar_coleta(metodos: List[str]) -> None:
+    if "twikit" in metodos:
+        estado = "ok"
+    elif metodos:
+        estado = "instavel"
+    else:
+        estado = "falhou"
+    _ULTIMA_COLETA.update(
+        estado=estado,
+        momento=_agora_utc_naive().isoformat(),
+        metodos=sorted(set(metodos)),
+    )
+
+
 def coletar_feed_x(
     perfis: List[str],
     limite_por_perfil: int = 30,
@@ -416,6 +444,7 @@ def coletar_feed_x(
 
     todos: List[Dict] = []
     falharam: List[str] = []
+    metodos: List[str] = []
 
     for perfil in perfis:
         username = perfil.lstrip("@").strip()
@@ -425,8 +454,11 @@ def coletar_feed_x(
         tweets = _coletar_perfil(username, limite_por_perfil, avisos)
         if tweets:
             todos.extend(tweets)
+            metodos.append(_CACHE[username.lower()][3])
         else:
             falharam.append(username)
+
+    _registrar_coleta(metodos)
 
     if falharam:
         logger.warning("Perfis sem resultado: %s", ", ".join(falharam))

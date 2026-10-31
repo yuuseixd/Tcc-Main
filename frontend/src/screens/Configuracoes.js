@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { INTERVALOS_COLETA } from "../constants";
+import { INTERVALOS_COLETA, estadoColetaX } from "../constants";
 import { Pill, Seg, Switch, Topline } from "../components/ui";
 
 const TEMAS = [
@@ -11,9 +11,10 @@ const TEMAS = [
 
 export default function Configuracoes({
   moeda, notify, tema, setTema, autoRefresh, setAutoRefresh, autoColeta,
-  setAutoColeta, perfisX, setPerfisX, twitterOk, abrirLogin, redditOauth,
+  setAutoColeta, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin, redditOauth,
   usuario, irParaPerfil, sair,
 }) {
+  const statusX = estadoColetaX(twitterOk, xColeta);
   const [sincronizando, setSincronizando] = useState(false);
 
   const sincronizar = async () => {
@@ -80,15 +81,9 @@ export default function Configuracoes({
         <div className="card stack">
           <div className="row-between">
             <h2>X (Twitter)</h2>
-            <Pill tom={twitterOk ? "warn" : "neg"}>
-              {twitterOk ? "Coleta ao vivo instável" : "Cookies não configurados"}
-            </Pill>
+            <Pill tom={statusX.tom}>{statusX.rotulo}</Pill>
           </div>
-          <p className="hint">
-            {twitterOk
-              ? "Cookies da sessão salvos. A coleta ao vivo está instável no momento; as análises usam os posts já salvos no banco."
-              : "Sem os cookies, o X não pode ser coletado. As análises usam os posts já salvos no banco."}
-          </p>
+          <p className="hint">{statusX.dica}</p>
           <div className="field">
             <label htmlFor="cfg-perfis">Perfis do X (separados por vírgula)</label>
             <input id="cfg-perfis" value={perfisX} onChange={(e) => setPerfisX(e.target.value)} />

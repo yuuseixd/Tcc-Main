@@ -16,6 +16,7 @@ import { api, API_URL, ApiError } from "../api";
 import {
   INTERVALOS_COLETA,
   SUBREDDITS_DEFAULT,
+  estadoColetaX,
   foiCancelada,
   listaDePerfis,
 } from "../constants";
@@ -40,8 +41,8 @@ const VISOES = [
 const MARGEM = { top: 8, right: 8, left: 0, bottom: 0 };
 
 export default function Redes({
-  moeda, setMoeda, notify, perfisX, setPerfisX, twitterOk, abrirLogin,
-  redditOauth, autoColeta, setAutoColeta,
+  moeda, setMoeda, notify, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin,
+  redditOauth, autoColeta, setAutoColeta, atualizarSaude,
 }) {
   const [visao, setVisao] = useState(
     () => localStorage.getItem("senty_visao_redes") || "X",
@@ -66,6 +67,8 @@ export default function Redes({
           perfisX={perfisX}
           setPerfisX={setPerfisX}
           twitterOk={twitterOk}
+          xColeta={xColeta}
+          atualizarSaude={atualizarSaude}
           abrirLogin={abrirLogin}
           redditOauth={redditOauth}
           autoColeta={autoColeta}
@@ -79,8 +82,8 @@ export default function Redes({
 /* ── X ou Reddit: coleta, correlação e feed ─────────────────────────── */
 
 function FonteView({
-  fonte, moeda, notify, perfisX, setPerfisX, twitterOk, abrirLogin,
-  redditOauth, autoColeta, setAutoColeta,
+  fonte, moeda, notify, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin,
+  redditOauth, autoColeta, setAutoColeta, atualizarSaude,
 }) {
   const ehX = fonte === "X";
   const [corr, setCorr] = useState(null);
@@ -136,6 +139,7 @@ function FonteView({
         if (!silencioso) {
           notify.erro(
             e instanceof ApiError
+        atualizarSaude?.();
               ? `Falha na coleta: ${e.message}`
               : "Falha ao coletar. Verifique o servidor.",
           );
@@ -144,7 +148,8 @@ function FonteView({
         if (!silencioso) setColetando(false);
       }
     },
-    [ehX, moeda, perfisX, notify, carregarCorr],
+        atualizarSaude?.();
+    [ehX, moeda, perfisX, notify, carregarCorr, atualizarSaude],
   );
 
   useEffect(() => {
@@ -181,6 +186,7 @@ function FonteView({
   };
 
   const gerarPdf = async () => {
+      atualizarSaude?.();
     if (gerandoPdf) return;
     setGerandoPdf(true);
     try {
@@ -201,6 +207,7 @@ function FonteView({
   const limitePreco = Math.max(
     0.5,
     Math.ceil(Math.max(0, ...comVariacao.map((p) => Math.abs(p.variacao_preco))) * 2) / 2,
+  const statusX = estadoColetaX(twitterOk, xColeta);
   );
 
   return (
@@ -210,13 +217,9 @@ function FonteView({
           <>
             <div className="row-between">
               <h2>Coleta do X</h2>
-              <Pill tom={twitterOk ? "warn" : "neg"}>
-                {twitterOk ? "Coleta ao vivo instável" : "Cookies não configurados"}
-              </Pill>
+              <Pill tom={statusX.tom}>{statusX.rotulo}</Pill>
             </div>
-            <p className="hint">
-              A coleta ao vivo do X está instável. As análises usam os posts já salvos no banco.
-            </p>
+            <p className="hint">{statusX.dica}</p>
             <div className="fgrid">
               <div className="field">
                 <label htmlFor="x-perfis">Perfis (separados por vírgula)</label>

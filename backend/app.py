@@ -24,7 +24,11 @@ from sqlalchemy.orm import Session
 
 from collectors.cookie_auth import COOKIES_PATH, cookies_validos
 from collectors.reddit_collector import coletar_posts_reddit_json
-from collectors.x_collector import coletar_feed_x, coletar_tweets_x
+from collectors.x_collector import (
+    coletar_feed_x,
+    coletar_tweets_x,
+    status_ultima_coleta,
+)
 from config import (
     ADMIN_TOKEN,
     CORS_ORIGINS,
@@ -211,6 +215,7 @@ def health_check():
         "versao": app.version,
         "bert_carregado": svc_sentimento.modelo_carregado(),
         "twitter_cookies": cookies_validos(),
+        "twitter_coleta": status_ultima_coleta(),
         "reddit_oauth": reddit_autenticado(),
         "moedas_suportadas": MOEDAS_SUPORTADAS,
     }
@@ -239,6 +244,7 @@ def twitter_status():
     valido = cookies_validos()
     return {
         "cookies_validos": valido,
+        "ultima_coleta": status_ultima_coleta(),
         "mensagem": (
             "Cookies do X válidos. Pronto para coletar."
             if valido

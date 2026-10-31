@@ -80,6 +80,42 @@ export const listaDePerfis = (texto) =>
 /** Ignora o erro disparado quando cancelamos uma requisição de propósito. */
 export const foiCancelada = (e) => e?.name === "AbortError";
 
+/**
+ * Estado da coleta do X a partir de /status (cookies + última coleta real).
+ * `tom` segue as cores do <Pill>; `curto` vai no rodapé da barra lateral.
+ */
+export function estadoColetaX(cookiesOk, ultima) {
+  if (!cookiesOk) {
+    return {
+      tom: "neg", rotulo: "Cookies não configurados", curto: "configurar cookies",
+      dica: "Sem os cookies, o X não pode ser coletado. As análises usam os posts já salvos no banco.",
+    };
+  }
+  switch (ultima?.estado) {
+    case "ok":
+      return {
+        tom: "pos", rotulo: "Coleta ao vivo ativa", curto: "coleta ativa",
+        dica: "A última coleta usou a sessão autenticada do X.",
+      };
+    case "instavel":
+      return {
+        tom: "warn", rotulo: "Coleta ao vivo instável", curto: "coleta instável",
+        dica: "A sessão autenticada falhou na última coleta e o modo público foi usado, " +
+          "com cobertura de tweets limitada. Verifique os cookies.",
+      };
+    case "falhou":
+      return {
+        tom: "neg", rotulo: "Última coleta falhou", curto: "última coleta falhou",
+        dica: "Nenhum perfil retornou tweets na última coleta. Verifique os perfis e os cookies.",
+      };
+    default:
+      return {
+        tom: "acc", rotulo: "Cookies configurados", curto: "cookies configurados",
+        dica: "Cookies da sessão salvos. O estado da coleta aparece aqui após a primeira coleta.",
+      };
+  }
+}
+
 export const FONTES_SOCIAIS = [
   { valor: "X", rotulo: "X" },
   { valor: "Reddit", rotulo: "Reddit" },

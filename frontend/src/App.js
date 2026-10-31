@@ -9,6 +9,7 @@ import Geral from "./screens/Geral";
 import Perfil from "./screens/Perfil";
 import Redes from "./screens/Redes";
 import Simulador from "./screens/Simulador";
+import { estadoColetaX } from "./constants";
 
 /** `restrita`: exige conta. Só a Visão geral é aberta a quem não entrou. */
 const TELAS = [
@@ -119,6 +120,7 @@ function App() {
       setSaude({
         online: d.status === "ok",
         twitter: Boolean(d.twitter_cookies),
+        xColeta: d.twitter_coleta || null,
         reddit: Boolean(d.reddit_oauth),
       });
     } catch {
@@ -180,6 +182,7 @@ function App() {
 
   const abrirLogin = useCallback(() => setModalLogin(true), []);
   const comuns = { moeda, setMoeda, notify };
+  const statusX = estadoColetaX(saude.twitter, saude.xColeta);
 
   const definicao = TELAS.find((t) => t.id === tela);
   const bloqueada = (definicao?.restrita && !usuario) || tela === "acesso";
@@ -231,7 +234,10 @@ function App() {
             <i className={`dot ${saude.online ? "" : "err"}`} />
             API {saude.online ? "online" : "offline"}
           </span>
-          <span><i className="dot warn" />X: coleta ao vivo instável</span>
+          <span>
+            <i className={`dot ${{ pos: "", neg: "err" }[statusX.tom] ?? "warn"}`} />
+            X: {statusX.curto}
+          </span>
           <span>
             <i className={`dot ${saude.reddit ? "" : "warn"}`} />
             Reddit: {saude.reddit ? "chaves configuradas" : "configurar chaves"}
@@ -264,7 +270,8 @@ function App() {
         )}
         {!bloqueada && tela === "redes" && (
           <Redes {...comuns} perfisX={perfisX} setPerfisX={setPerfisX}
-            twitterOk={saude.twitter} abrirLogin={abrirLogin} redditOauth={saude.reddit}
+            twitterOk={saude.twitter} xColeta={saude.xColeta} atualizarSaude={checarSaude}
+            abrirLogin={abrirLogin} redditOauth={saude.reddit}
             autoColeta={autoColeta} setAutoColeta={setAutoColeta} />
         )}
         {!bloqueada && tela === "sim" && (
@@ -280,7 +287,8 @@ function App() {
             autoColeta={autoColeta} setAutoColeta={setAutoColeta}
             perfisX={perfisX} setPerfisX={setPerfisX} usuario={usuario}
             irParaPerfil={() => setTela("perfil")} sair={sair}
-            twitterOk={saude.twitter} abrirLogin={abrirLogin} redditOauth={saude.reddit} />
+            twitterOk={saude.twitter} xColeta={saude.xColeta}
+            abrirLogin={abrirLogin} redditOauth={saude.reddit} />
         )}
       </main>
 
