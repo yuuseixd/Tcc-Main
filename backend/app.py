@@ -33,7 +33,7 @@ from config import (
     RELATORIOS_DIR,
     reddit_autenticado,
 )
-from db import Base, engine, get_db
+from db import criar_tabelas, get_db
 from models import MarketPoint, SocialPost, Usuario
 from schemas import (
     CadastroRequest,
@@ -75,7 +75,7 @@ logger = logging.getLogger("sentcrypto")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Prepara o banco e carrega o modelo antes de aceitar requisições."""
-    Base.metadata.create_all(bind=engine)
+    criar_tabelas()
     # Carregar o BERT leva dezenas de segundos; fazer isso fora do event loop
     # evita que o servidor pareça travado durante a inicialização.
     await run_in_threadpool(svc_sentimento.carregar_modelo)

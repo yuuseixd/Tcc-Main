@@ -39,6 +39,12 @@ def _env_list(nome: str, padrao: list[str]) -> list[str]:
 # ── Banco de dados ──────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'dados.db'}")
 
+# Contas e sessões ficam num banco à parte: trocar o DATABASE_URL (ex.: para a
+# amostra da pesquisa) não pode fazer as contas cadastradas "sumirem".
+CONTAS_DATABASE_URL = os.getenv(
+    "CONTAS_DATABASE_URL", f"sqlite:///{BASE_DIR / 'contas.db'}"
+)
+
 # ── Diretórios ──────────────────────────────────────────────────────────────
 RELATORIOS_DIR = BASE_DIR / "relatorios"
 

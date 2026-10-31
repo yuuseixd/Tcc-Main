@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import inspect, text
 
 from config import DATABASE_URL
-from db import Base, engine
+from db import criar_tabelas, engine
 
 # Importar os modelos registra as tabelas no metadata do SQLAlchemy.
 from models import MarketPoint, Sessao, SocialPost, Usuario  # noqa: F401
@@ -144,7 +144,7 @@ def main() -> None:
     fazer_backup()
 
     logger.info("[2/5] Criando tabelas ausentes...")
-    Base.metadata.create_all(bind=engine)
+    criar_tabelas()
 
     with engine.begin() as conn:
         antes_market = contar(conn, "market_points")
