@@ -1,0 +1,10 @@
+# Desenvolvimento: dependências de execução + testes + ferramentas de pesquisa.
+-r requirements.txt
+
+pytest==9.2.0
+httpx==0.28.1   # usado pelo TestClient do FastAPI
+
+# Tokenizadores dos modelos alternativos (XLM-RoBERTa usa SentencePiece).
+# Necessários apenas para tools/benchmark_modelos.py e tools/avaliar_modelos.py.
+sentencepiece
+protobuf

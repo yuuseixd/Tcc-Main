@@ -33,3 +33,9 @@ backend/relatorios/*.pdf
 
 # Logs da coleta contínua
 backend/logs/
+
+# Logs de execução (backend.log, frontend_run.log...)
+*.log
+
+# Arquivos de trava do Office (criados enquanto a planilha está aberta)
+~$*

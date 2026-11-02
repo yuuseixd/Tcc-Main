@@ -1,26 +1,24 @@
-fastapi
-uvicorn[standard]
-transformers
-sqlalchemy
-requests
-python-dotenv
-torch
-fpdf2
-pydantic
+# Dependências de execução, com versões fixas (testadas em Python 3.11).
+# Para desenvolvimento e testes: pip install -r requirements-dev.txt
+
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+transformers==5.2.0
+torch==2.10.0
+sqlalchemy==2.0.48
+pydantic==2.12.5
+requests==2.32.5
+python-dotenv==1.2.2
+fpdf2==2.8.7
+openpyxl==3.1.5
+
 # twikit oficial (d60/twikit) está quebrado desde 18/03/2026: o X mudou o
 # bundle JS (ondemand.s.js) e o parser de "KEY_BYTE indices" do twikit não
 # acompanhou (github.com/d60/twikit/issues/408). Usando o fork mantido
 # unclecode/twikit, que corrige esse parsing — mesmo nome de módulo, drop-in.
-git+https://github.com/unclecode/twikit.git
-undetected-chromedriver>=3.5.5
-selenium>=4.20.0
+# Fixado no commit testado: um push novo no fork não muda o build.
+twikit @ git+https://github.com/unclecode/twikit.git@6a73ab97f4de09f79139f6308c9fb80029a9f5f7
 
-# Tokenizadores dos modelos alternativos (XLM-RoBERTa usa SentencePiece).
-# Necessários apenas para tools/benchmark_modelos.py.
-sentencepiece
-protobuf
-
-# Testes
-pytest
-
-openpyxl>=3.1
+# Extração automática de cookies do X pelo navegador (collectors/cookie_auth.py).
+undetected-chromedriver==3.5.5
+selenium==4.41.0
