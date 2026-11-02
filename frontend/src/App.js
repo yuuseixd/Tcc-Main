@@ -246,6 +246,7 @@ function App() {
             title="Alternar o tema">
             Tema: {ROTULO_TEMA[tema]}
           </button>
+          <span>Projeto acadêmico · não é recomendação de investimento</span>
         </div>
       </aside>
 

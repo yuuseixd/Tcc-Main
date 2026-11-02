@@ -164,6 +164,11 @@ export default function Simulador({ moeda, notify, perfisX, perfilUsuario, risco
         <Pill>Dinheiro fictício</Pill>
       </Topline>
 
+      <p className="hint">
+        Projeto acadêmico. Resultados passados não garantem resultados futuros e nada aqui é
+        recomendação de investimento.
+      </p>
+
       <div className="card stack">
         <div className="fgrid">
           <div className="field">

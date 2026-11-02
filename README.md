@@ -13,7 +13,9 @@ humor das redes sociais antecede o movimento do mercado.
 
 - [Como funciona](#como-funciona)
 - [Arquitetura](#arquitetura)
+- [Resultados atuais](#resultados-atuais)
 - [Instalação](#instalação)
+- [Docker](#docker)
 - [Executando](#executando)
 - [Métricas](#métricas)
 - [Endpoints da API](#endpoints-da-api)
@@ -59,7 +61,9 @@ humor das redes sociais antecede o movimento do mercado.
 
 ```
 backend/
-  app.py                  Rotas HTTP (camada fina: valida, chama serviço, responde)
+  app.py                  Montagem da aplicação (CORS, estáticos, routers)
+  routers/                Rotas HTTP por domínio (camada fina: valida, chama serviço, responde)
+    deps.py               Dependências comuns (login, validação de moeda/fonte/período)
   config.py               Configuração central lida do .env
   db.py                   Engine e sessão do SQLAlchemy
   models.py               Tabelas market_points e social_posts
@@ -68,7 +72,9 @@ backend/
   services/
     sentimento.py         BERT, mapeamento de labels, filtro de relevância
     mercado.py            Binance, candles, sentimento derivado do preço
-    correlacao.py         Agregação por hora e métricas de correlação
+    correlacao.py         Agregação por hora, métricas e análise preditiva
+    estatistica.py        Teste binomial, IC de Wilson, Pearson por permutação, baselines
+    simulacao.py          Backtest de compra/venda com taxa por operação
     posts.py              Persistência com deduplicação
     relatorios.py         Geração dos PDFs
   collectors/
@@ -93,6 +99,26 @@ saída (`utils/tempo.py`) é o que mantém banco, gráficos e PDF concordando en
 
 ---
 
+## Resultados atuais
+
+Amostra da pesquisa (BTC, X, `backend/dados_amostra_pesquisa.db`), todo o
+histórico com preço:
+
+| Horizonte | Horas | Acerto | IC 95% | p-valor | "Sempre sobe" | Momentum |
+|-----------|------:|-------:|--------|--------:|--------------:|---------:|
+| mesma hora | 85 | 43,5% | 33,5–54,1% | 0,278 | 54,1% | 46,8% |
+| +1h | 82 | 56,1% | 45,3–66,3% | 0,320 | 45,1% | 50,6% |
+| +4h | 83 | 56,6% | 45,9–66,8% | 0,272 | 45,8% | 50,0% |
+| +24h | 90 | 53,3% | 43,1–63,3% | 0,598 | 47,8% | 51,8% |
+
+**Leitura:** nos horizontes preditivos (+1h e +4h) o sentimento fica acima das
+duas estratégias ingênuas, mas **nenhum horizonte difere do acaso** a 5%. Com
+~85 horas comparáveis o intervalo de confiança tem ~20 pontos de largura: o
+resultado é um indício, não uma evidência. A conclusão do próprio sistema
+aparece no dashboard e no PDF. Os números mudam a cada coleta.
+
+---
+
 ## Instalação
 
 **Pré-requisitos:** Python 3.11+, Node.js 18+.
@@ -105,7 +131,7 @@ python -m venv venv
 venv\Scripts\activate          # Windows
 # source venv/bin/activate     # Linux/macOS
 
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # ou requirements.txt, sem as ferramentas de teste
 
 copy .env.example .env         # Windows  (cp no Linux/macOS)
 python setup_db.py
@@ -120,6 +146,29 @@ python setup_db.py
 cd frontend
 npm install
 copy .env.example .env         # opcional; o padrão já aponta para localhost
+```
+
+---
+
+## Docker
+
+Sobe backend e dashboard com um comando (requer Docker Desktop aberto):
+
+```bash
+docker compose up --build
+# Dashboard: http://localhost:3000    API: http://localhost:8000/docs
+```
+
+Bancos, cookies do X e o cache do modelo ficam em volumes (`dados`, `modelos`)
+e sobrevivem à recriação dos containers. As credenciais vêm do `backend/.env`.
+
+```bash
+# Apresentar com a amostra da pesquisa
+docker compose cp backend/dados_amostra_pesquisa.db backend:/data/dados.db
+docker compose restart backend
+
+# Coleta contínua em segundo plano (X + Reddit a cada 20 min)
+docker compose --profile coleta up -d
 ```
 
 ---
@@ -222,7 +271,7 @@ seguras: posts já salvos são descartados antes de chegar ao modelo.
 
 ```bash
 cd backend
-python -m pytest tests/ -v      # 43 testes
+python -m pytest tests/ -q      # 213 testes
 ```
 
 ```bash
@@ -232,7 +281,11 @@ npm test                        # CI=true npm test para rodar sem watch
 
 A suíte cobre justamente o que sustenta os números do trabalho: deduplicação
 de posts e candles, normalização de fuso horário, filtro de relevância cripto,
-mapeamento dos labels do modelo e o cálculo do Sentiment Score.
+mapeamento dos labels do modelo, o cálculo do Sentiment Score, os testes
+estatísticos (conferidos contra valores exatos) e o backtest com taxas.
+
+O GitHub Actions (`.github/workflows/ci.yml`) roda as duas suítes e o build do
+frontend a cada push na `main` e em cada pull request.
 
 ---
 
@@ -264,8 +317,34 @@ Uma hora é *comparável* quando o sentimento não é neutro **e** o preço não
 estável. Nessas horas, conta-se acerto quando a direção do sentimento coincide
 com a direção do preço.
 
+A taxa do resumo compara os posts com o candle **da mesma hora**: mede reação
+(posts e movimento acontecem juntos), não antecipação. A pergunta do trabalho —
+o sentimento antecede o preço? — é respondida pela análise preditiva abaixo.
+
 > ⚠️ Com menos de 30 horas comparáveis a taxa não sustenta conclusão
 > estatística. O sistema sinaliza isso no dashboard e no PDF (`amostra_suficiente`).
+
+### Análise preditiva e testes estatísticos
+
+`services/estatistica.py`, em Python puro (sem scipy):
+
+| Pergunta | Teste |
+|----------|-------|
+| A taxa de acerto é diferente do acaso? | Teste binomial exato contra 50% (bilateral) e IC de Wilson 95% |
+| É melhor que uma estratégia ingênua? | Baselines nas **mesmas horas**: "sempre sobe" e momentum (repete o último candle fechado) |
+| Há relação linear com o retorno? | Pearson entre Sentiment Score e retorno, p-valor por permutação (1000 sorteios, semente fixa) |
+
+Horizontes: **mesma hora**, **+1h**, **+4h** e **+24h**. Os preditivos medem do
+**fechamento** da hora dos posts até N horas depois — o retorno que alguém
+capturaria operando no sinal assim que ele existe. Um horizonte só conta como
+evidência se tiver p < 0,05 **e** superar a baseline "sempre sobe".
+
+### Simulador
+
+O backtest cobra **0,1% por operação** (taxa spot da Binance), na compra e na
+venda, e o buy & hold paga a mesma taxa de entrada. Sem custo, uma estratégia
+que opera muito parece melhor do que é. A taxa é ajustável pelo campo
+`taxa_operacao_pct` de `/simulacao/investimento`.
 
 ---
 
@@ -467,8 +546,8 @@ duas pessoas, cada uma na sua coluna, e rode
    a validação com posts reais rotulados ainda está pendente.
 
 2. **Amostra insuficiente para conclusão estatística.** Este é o limite
-   principal do trabalho hoje. Com ~50 horas comparáveis, o intervalo de
-   confiança da taxa de acerto tem cerca de 26 pontos percentuais de largura.
+   principal do trabalho hoje. Com ~85 horas comparáveis, o intervalo de
+   confiança da taxa de acerto tem cerca de 20 pontos percentuais de largura.
    Para reduzi-lo a ±5 pontos seriam necessárias cerca de 400 horas
    comparáveis — o que significa coletar de forma contínua por várias semanas.
 
@@ -486,5 +565,9 @@ duas pessoas, cada uma na sua coluna, e rode
    direção, não relação causal. Preço de cripto responde a muitos fatores fora
    do escopo deste trabalho.
 
-6. **Janela de preço.** A consulta à Binance cobre no máximo 180 dias para trás;
-   posts mais antigos que isso ficam sem preço correspondente.
+6. **Janela de preço.** Os preços são buscados por trechos contíguos de horas
+   com posts (até 40 trechos por análise). Posts antigos isolados além desse
+   teto ficam sem preço e são omitidos da tabela do PDF.
+
+7. **Não é recomendação de investimento.** É um projeto acadêmico; o perfil e
+   o simulador têm fim educacional.
