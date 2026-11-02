@@ -1,0 +1,61 @@
+# Sobe o SentCrypto inteiro:  docker compose up --build
+#   Dashboard: http://localhost:3000    API: http://localhost:8000/docs
+#
+# Para apresentar com a amostra da pesquisa, copie o banco para o volume:
+#   docker compose cp backend/dados_amostra_pesquisa.db backend:/data/dados.db
+#   docker compose restart backend
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    # Credenciais (Reddit, X, ADMIN_TOKEN...). Os caminhos de banco do .env
+    # são ignorados: o Dockerfile aponta tudo para o volume /data.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: sqlite:////data/dados.db
+      CONTAS_DATABASE_URL: sqlite:////data/contas.db
+      X_COOKIES_PATH: /data/x_cookies.json
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      - dados:/data
+      - modelos:/models
+    restart: unless-stopped
+
+  # Coleta contínua (X + Reddit a cada 20 min), independente do navegador.
+  # Opcional — só sobe quando pedido:  docker compose --profile coleta up -d
+  coletor:
+    build: ./backend
+    profiles: ["coleta"]
+    command: ["python", "tools/coletor_continuo.py", "--intervalo", "20"]
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: sqlite:////data/dados.db
+      CONTAS_DATABASE_URL: sqlite:////data/contas.db
+      X_COOKIES_PATH: /data/x_cookies.json
+    volumes:
+      - dados:/data
+      - modelos:/models
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_URL: http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  dados:
+  modelos:

@@ -13,7 +13,11 @@ import tempfile
 import os
 from pathlib import Path
 
-COOKIES_PATH = Path(__file__).parent.parent / "x_cookies.json"
+# X_COOKIES_PATH permite guardar os cookies fora da pasta do código (ex.: no
+# volume de dados do Docker, para sobreviverem à recriação do container).
+COOKIES_PATH = Path(
+    os.getenv("X_COOKIES_PATH") or Path(__file__).parent.parent / "x_cookies.json"
+)
 
 
 def extrair_cookies_do_navegador() -> bool:

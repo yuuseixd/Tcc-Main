@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+x_cookies.json
+*.db
+*.db-shm
+*.db-wal
+*.log
+relatorios/
+logs/
+rotulagem/~$*

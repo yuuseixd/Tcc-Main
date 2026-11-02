@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 import app as app_modulo
 from db import Base, get_db
 from models import Sessao, Usuario
+from routers import contas as rotas_contas
 from services import contas as svc_contas
 from services import perfil as svc_perfil
 from utils.tempo import agora_utc
@@ -58,7 +59,7 @@ def client(sessao_db, monkeypatch):
     app_modulo.app.dependency_overrides[get_db] = _db
     # Cada teste começa com a contagem de tentativas zerada.
     monkeypatch.setattr(
-        app_modulo, "limitador_login", svc_contas.LimitadorTentativas()
+        rotas_contas, "limitador_login", svc_contas.LimitadorTentativas()
     )
     yield TestClient(app_modulo.app)
     app_modulo.app.dependency_overrides.clear()
