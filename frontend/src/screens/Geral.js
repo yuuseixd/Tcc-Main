@@ -260,7 +260,8 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
               {resumo && !resumo.amostra_suficiente && <Pill tom="warn">Amostra pequena</Pill>}
               <span className="s">
                 {resumo
-                  ? `${resumo.acertos} acertos em ${resumo.total_comparavel} horas comparáveis (o ideal é 30 ou mais)`
+                  ? `${resumo.acertos} acertos em ${resumo.total_comparavel} horas comparáveis` +
+                    (resumo.p_valor != null ? ` · p = ${numero(resumo.p_valor, 3)}` : " (o ideal é 30 ou mais)")
                   : "Sem dados de correlação"}
               </span>
             </div>
@@ -304,11 +305,13 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
                 <strong>Leitura rápida:</strong> o sentimento médio do {fonte} sobre {nome} é{" "}
                 {numero(resumo.score_medio, 2)} ({leitura.texto.toLowerCase()}).
                 {resumo.taxa_acerto_pct != null && (
-                  <> Ele acertou a direção do preço em {numero(resumo.taxa_acerto_pct, 0)}% das{" "}
+                  <> Ele coincidiu com a direção do preço em {numero(resumo.taxa_acerto_pct, 0)}% das{" "}
                     {resumo.total_comparavel} horas comparáveis
-                    {resumo.amostra_suficiente
-                      ? "."
-                      : ". Com tão poucas horas, ainda não dá para concluir nada."}</>
+                    {!resumo.amostra_suficiente
+                      ? ". Com tão poucas horas, ainda não dá para concluir nada."
+                      : resumo.significativo
+                        ? `, diferente do acaso (p = ${numero(resumo.p_valor, 3)}).`
+                        : `, o que não difere do acaso (p = ${numero(resumo.p_valor, 3)}).`}</>
                 )}
               </p>
             </div>

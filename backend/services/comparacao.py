@@ -11,35 +11,16 @@ de verdade do gráfico e do PDF — e cruza as duas séries horárias:
   a variação percentual de preço da mesma hora.
 """
 
-import math
 from sqlalchemy.orm import Session
 
 from services import correlacao as svc_correlacao
+from services.estatistica import pearson
 from services.sentimento import NEGATIVO, POSITIVO
 
 FONTES_COMPARAVEIS = ("X", "Reddit")
 
 # Abaixo disso a correlação entre fontes é ruído e vira ``None``.
 MIN_HORAS_EM_COMUM = 10
-# Mínimo de pares para calcular qualquer Pearson.
-MIN_PARES_PEARSON = 3
-
-
-def pearson(xs: list[float], ys: list[float]) -> float | None:
-    """Correlação de Pearson; ``None`` sem pares suficientes ou sem variância."""
-    n = len(xs)
-    if n != len(ys) or n < MIN_PARES_PEARSON:
-        return None
-    media_x = sum(xs) / n
-    media_y = sum(ys) / n
-    cov = sum((x - media_x) * (y - media_y) for x, y in zip(xs, ys))
-    var_x = sum((x - media_x) ** 2 for x in xs)
-    var_y = sum((y - media_y) ** 2 for y in ys)
-    if var_x == 0 or var_y == 0:
-        return None
-    return round(cov / math.sqrt(var_x * var_y), 4)
-
-
 def _correlacao_com_preco(pontos: list[dict]) -> dict:
     pares = [
         (p["sentiment_score"], p["variacao_preco"])

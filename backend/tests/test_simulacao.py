@@ -76,6 +76,9 @@ def rodar(
     # stop-loss — nenhum deles derruba o preço mais de 50% após uma compra.
     percentual_perda_aceita=50.0,
     modo="fomo",
+    # Zero por padrão: os testes de mecânica conferem preços e lucros exatos;
+    # a taxa tem testes próprios em TestTaxa.
+    taxa_operacao_pct=0.0,
 ):
     """Insere os posts, mocka os candles e roda a simulação."""
     for i, sentimento in sentimentos_por_hora.items():
@@ -91,7 +94,7 @@ def rodar(
         db, "BTC", list(perfis), BASE, BASE + timedelta(hours=len(precos)),
         capital_inicial, valor_por_compra,
         percentual_lucro_venda, percentual_queda_compra,
-        percentual_perda_aceita, modo,
+        percentual_perda_aceita, modo, "X", taxa_operacao_pct,
     )
 
 
@@ -297,3 +300,30 @@ class TestModoFlat:
         resultado = rodar(db, monkeypatch, precos, {}, modo="flat")
 
         assert resultado["parametros"]["modo"] == "flat"
+
+
+class TestTaxa:
+    def test_taxa_reduz_lucro_da_venda(self, db, monkeypatch):
+        # Compra 100 a 95 e vende a 100: sem taxa, lucro = 100/95*100 - 100.
+        precos = [100, 95, 100]
+        sem = rodar(db, monkeypatch, precos, {1: "positivo"})
+        venda_sem = [t for t in sem["trades"] if t["tipo"] == "venda"][0]
+        assert sem["resumo"]["custos_totais"] == 0
+
+        db.query(SocialPost).delete()
+        db.commit()
+        com = rodar(db, monkeypatch, precos, {1: "positivo"}, taxa_operacao_pct=0.1)
+        venda_com = [t for t in com["trades"] if t["tipo"] == "venda"][0]
+
+        # Compra: 0,10 de taxa sobre 100. Venda: 0,1% sobre ~105,16 brutos.
+        bruto_venda = (100 - 0.1) / 95 * 100
+        esperado = bruto_venda * 0.999 - 100
+        assert venda_com["lucro"] == pytest.approx(esperado, abs=0.01)
+        assert venda_com["lucro"] < venda_sem["lucro"]
+        assert com["resumo"]["custos_totais"] == pytest.approx(0.1 + bruto_venda * 0.001, abs=0.01)
+
+    def test_buy_and_hold_tambem_paga_a_taxa_de_entrada(self, db, monkeypatch):
+        precos = [100, 100, 110]
+        r = rodar(db, monkeypatch, precos, {0: "negativo"}, taxa_operacao_pct=1.0)
+        # 1000 com 1% de taxa = 990 investidos; a 110 vale 1089 -> +8,9%.
+        assert r["resumo"]["buy_and_hold"]["lucro_pct"] == pytest.approx(8.9)

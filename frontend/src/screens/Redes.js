@@ -360,9 +360,13 @@ function FonteView({
             )}
             {r.total_comparavel > 0 && (
               <div className="stat-row">
-                <div className="stat ok"><span className="l">Acertos</span><span className="v">{r.acertos}</span><span className="s">Sentimento previu a direção</span></div>
-                <div className="stat bad"><span className="l">Erros</span><span className="v">{r.erros}</span><span className="s">Não correspondeu</span></div>
-                <div className="stat"><span className="l">Taxa de acerto</span><span className="v">{numero(r.taxa_acerto_pct, 1)}%</span><span className="s">de {r.total_comparavel} horas comparáveis</span></div>
+                <div className="stat ok"><span className="l">Acertos</span><span className="v">{r.acertos}</span><span className="s">Mesma direção do candle da hora</span></div>
+                <div className="stat bad"><span className="l">Erros</span><span className="v">{r.erros}</span><span className="s">Direções opostas</span></div>
+                <div className="stat"><span className="l">Taxa de acerto</span><span className="v">{numero(r.taxa_acerto_pct, 1)}%</span>
+                  <span className="s">
+                    {r.ic95_pct ? `IC 95%: ${numero(r.ic95_pct[0], 0)}–${numero(r.ic95_pct[1], 0)}% · ` : ""}
+                    p = {numero(r.p_valor, 3)} {r.significativo ? "(significativo)" : "(não significativo)"}
+                  </span></div>
                 <div className="stat"><span className="l">Retorno após positivo</span><span className="v">{percentual(r.retorno_medio_apos_positivo, 3)}</span><span className="s">média em 1 hora</span></div>
                 <div className="stat"><span className="l">Retorno após negativo</span><span className="v">{percentual(r.retorno_medio_apos_negativo, 3)}</span><span className="s">média em 1 hora</span></div>
               </div>
@@ -397,6 +401,42 @@ function FonteView({
               <span style={{ "--c": "var(--pos)" }}>Preço subiu (direita)</span>
               <span style={{ "--c": "var(--neg)" }}>Preço caiu (direita)</span>
             </div>
+
+            {corr?.analise_preditiva?.length > 0 && (
+              <div className="stack">
+                <h3>O sentimento antecipa o preço?</h3>
+                <p className="hint">
+                  "Mesma hora" compara com o candle da própria hora (reação). Os horizontes +1h, +4h
+                  e +24h partem do fechamento da hora dos posts. Acerto significativo exige p &lt; 0,05
+                  e vencer as estratégias ingênuas medidas nas mesmas horas.
+                </p>
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Horizonte</th><th>Horas</th><th>Acerto</th><th>IC 95%</th><th>p-valor</th>
+                        <th>"Sempre sobe"</th><th>Momentum</th><th>Pearson (p)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {corr.analise_preditiva.map((h) => (
+                        <tr key={h.horizonte_h} className={h.significativo ? "ok" : ""}>
+                          <td>{h.rotulo}</td>
+                          <td>{h.total_comparavel}</td>
+                          <td>{h.taxa_acerto_pct != null ? `${numero(h.taxa_acerto_pct, 1)}%` : "—"}</td>
+                          <td>{h.ic95_pct ? `${numero(h.ic95_pct[0], 0)}–${numero(h.ic95_pct[1], 0)}%` : "—"}</td>
+                          <td>{h.p_valor != null ? numero(h.p_valor, 3) : "—"}</td>
+                          <td>{h.baseline_sempre_sobe_pct != null ? `${numero(h.baseline_sempre_sobe_pct, 1)}%` : "—"}</td>
+                          <td>{h.baseline_momentum_pct != null ? `${numero(h.baseline_momentum_pct, 1)}%` : "—"}</td>
+                          <td>{h.pearson != null ? `${numero(h.pearson, 2)} (${numero(h.pearson_p_valor, 2)})` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="callout">{corr.conclusao}</div>
+              </div>
+            )}
 
             <Recolhivel titulo={`Detalhamento por hora (${pontos.length})`}>
               <div className="tbl-wrap">

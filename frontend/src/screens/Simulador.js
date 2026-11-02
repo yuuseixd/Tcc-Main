@@ -391,6 +391,8 @@ function BlocoMoeda({ sigla, r }) {
           <span className="s">
             {s.posicoes_abertas_final} posições abertas
             {s.vendas_por_stop_loss > 0 && ` · ${s.vendas_por_stop_loss} por stop-loss`}
+            {s.custos_totais != null &&
+              ` · ${fmtMoeda(s.custos_totais)} em taxas (${numero(r.parametros.taxa_operacao_pct, 1)}% por operação)`}
           </span></div>
       </div>
 

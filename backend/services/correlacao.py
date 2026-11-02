@@ -26,19 +26,25 @@ from config import (
     LIMIAR_VARIACAO_PRECO_PCT,
 )
 from models import SocialPost
-from services import mercado
+from services import estatistica, mercado
 from services.sentimento import (
     NEGATIVO,
     NULO,
     POSITIVO,
     sentimento_para_indice,
 )
-from utils.tempo import truncar_hora
+from utils.tempo import agora_utc, truncar_hora
 
 logger = logging.getLogger("sentcrypto.correlacao")
 
 # Janelas (em horas) usadas na métrica Return After Sentiment.
 JANELAS_RETORNO = (1, 4, 24)
+
+# Horizontes da análise preditiva. O 0 é o candle da própria hora dos posts:
+# mede reação, não antecipação, porque os posts e o movimento acontecem juntos.
+# Os demais vão do FECHAMENTO da hora dos posts até N horas depois — o retorno
+# que alguém conseguiria capturar operando no sinal assim que ele existe.
+HORIZONTES_PREDITIVOS = (0, 1, 4, 24)
 
 # Horas com posts separadas por mais que isto viram trechos de consulta
 # independentes na Binance — evita baixar meses de candles entre dois períodos
@@ -48,6 +54,10 @@ INTERVALO_MAX_TRECHO = timedelta(days=7)
 # Teto de trechos consultados por análise (posts antigos isolados, como os que
 # o modo público do X devolve, viram um trecho cada).
 MAX_TRECHOS_PRECO = 40
+
+# Cache dos candles de trechos já encerrados: (símbolo, início, fim) -> mapa.
+_CACHE_TRECHOS: dict[tuple, dict[str, dict]] = {}
+MAX_CACHE_TRECHOS = 500
 
 
 @dataclass
@@ -139,18 +149,36 @@ def precos_para_horas(moeda: str, horas_iso: list[str]) -> dict[str, dict]:
         trechos = trechos[-MAX_TRECHOS_PRECO:]
 
     simbolo = mercado.simbolo_para(moeda)
+    agora = agora_utc()
     precos: dict[str, dict] = {}
     for inicio, fim in trechos:
+        # Uma hora antes do trecho: é o candle que a baseline "momentum" usa
+        # para a primeira hora com posts.
+        chave = (simbolo, inicio - timedelta(hours=1), fim + folga)
+        if chave in _CACHE_TRECHOS:
+            precos.update(_CACHE_TRECHOS[chave])
+            continue
         try:
             candles = mercado.buscar_klines_intervalo(
-                simbolo, inicio=inicio, fim=fim + folga, intervalo="1h"
+                simbolo, inicio=chave[1], fim=chave[2], intervalo="1h"
             )
         except mercado.ErroBinance as e:
             logger.warning("Sem dados de preço para %s: %s", moeda, e)
             continue
-        precos.update(mercado.mapa_precos_por_hora(candles))
+        mapa = mercado.mapa_precos_por_hora(candles)
+        # Candles de um trecho que já terminou nunca mudam; o trecho atual
+        # ainda ganha candles novos e é sempre consultado de novo.
+        if chave[2] + timedelta(hours=1) < agora:
+            if len(_CACHE_TRECHOS) >= MAX_CACHE_TRECHOS:
+                _CACHE_TRECHOS.pop(next(iter(_CACHE_TRECHOS)))
+            _CACHE_TRECHOS[chave] = mapa
+        precos.update(mapa)
 
     return precos
+
+
+def limpar_cache() -> None:
+    _CACHE_TRECHOS.clear()
 
 
 def _agrupar_em_trechos(horas: list[datetime]) -> list[tuple[datetime, datetime]]:
@@ -198,6 +226,8 @@ def calcular_correlacao(
         "fim": fim.isoformat() if fim else None,
         "pontos": [],
         "resumo": _resumo_vazio(),
+        "analise_preditiva": [],
+        "conclusao": estatistica.conclusao([]),
     }
 
     consulta = db.query(SocialPost).filter(
@@ -309,7 +339,73 @@ def calcular_correlacao(
         "amostra_suficiente": total_comparavel >= 30,
     }
 
-    return {**vazio, "pontos": pontos, "resumo": resumo}
+    preditiva = analise_preditiva(agrupado, precos)
+    # A taxa de acerto do resumo é a do horizonte 0; os testes vêm junto para
+    # o número nunca aparecer sem o p-valor e o intervalo de confiança.
+    mesma_hora = preditiva[0]
+    resumo.update(
+        {
+            "p_valor": mesma_hora["p_valor"],
+            "ic95_pct": mesma_hora["ic95_pct"],
+            "significativo": mesma_hora["significativo"],
+            "baseline_sempre_sobe_pct": mesma_hora["baseline_sempre_sobe_pct"],
+            "baseline_momentum_pct": mesma_hora["baseline_momentum_pct"],
+        }
+    )
+
+    return {
+        **vazio,
+        "pontos": pontos,
+        "resumo": resumo,
+        "analise_preditiva": preditiva,
+        "conclusao": estatistica.conclusao(preditiva),
+    }
+
+
+def analise_preditiva(
+    agrupado: dict[str, HoraAgregada],
+    precos: dict[str, dict],
+) -> list[dict]:
+    """Taxa de acerto, testes e baselines para cada horizonte preditivo."""
+    resultado = []
+    for horizonte in HORIZONTES_PREDITIVOS:
+        observacoes = []
+        for chave, grupo in agrupado.items():
+            atual = precos.get(chave)
+            if not atual:
+                continue
+            hora = datetime.fromisoformat(chave)
+
+            if horizonte == 0:
+                retorno = atual["variacao_pct"]
+                anterior = precos.get((hora - timedelta(hours=1)).isoformat())
+                momentum = anterior["variacao_pct"] if anterior else None
+            else:
+                futuro = precos.get((hora + timedelta(hours=horizonte)).isoformat())
+                if not futuro or not atual["preco_fechamento"]:
+                    continue
+                base = atual["preco_fechamento"]
+                retorno = (futuro["preco_fechamento"] - base) / base * 100
+                # O último candle fechado quando o sinal fica pronto é o da
+                # própria hora dos posts.
+                momentum = atual["variacao_pct"]
+
+            observacoes.append(
+                {
+                    "score": grupo.sentiment_score,
+                    "direcao": {POSITIVO: 1, NEGATIVO: -1}.get(grupo.direcao, 0),
+                    "retorno": retorno,
+                    "momentum": momentum,
+                }
+            )
+
+        avaliacao = estatistica.avaliar_horizonte(
+            observacoes, LIMIAR_VARIACAO_PRECO_PCT
+        )
+        avaliacao["horizonte_h"] = horizonte
+        avaliacao["rotulo"] = "mesma hora" if horizonte == 0 else f"+{horizonte}h"
+        resultado.append(avaliacao)
+    return resultado
 
 
 def _calcular_retornos(
@@ -350,4 +446,9 @@ def _resumo_vazio() -> dict:
         "retorno_medio_apos_positivo": None,
         "retorno_medio_apos_negativo": None,
         "amostra_suficiente": False,
+        "p_valor": None,
+        "ic95_pct": None,
+        "significativo": False,
+        "baseline_sempre_sobe_pct": None,
+        "baseline_momentum_pct": None,
     }

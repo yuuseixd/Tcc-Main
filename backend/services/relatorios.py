@@ -331,10 +331,17 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
     linhas = [
         f"Horas comparáveis (sentimento não-neutro e preço não-estável): "
         f"{resumo['total_comparavel']}",
-        f"Acertos (o sentimento antecipou a direção do preço): {resumo['acertos']}",
-        f"Erros (o sentimento não correspondeu):                {resumo['erros']}",
+        f"Acertos (sentimento e candle da mesma hora na mesma direção): {resumo['acertos']}",
+        f"Erros (direções opostas):                                     {resumo['erros']}",
         f"Taxa de acerto: {f'{taxa}%' if taxa is not None else 'N/A (sem dados comparáveis)'}",
     ]
+    if taxa is not None:
+        ic = resumo["ic95_pct"]
+        linhas += [
+            f"Intervalo de confiança 95% (Wilson): {ic[0]}% a {ic[1]}%",
+            f"p-valor (teste binomial contra 50%): {resumo['p_valor']:.4f}"
+            f"  ->  {'significativo' if resumo['significativo'] else 'não significativo'}",
+        ]
     if not resumo["amostra_suficiente"]:
         linhas += [
             "",
@@ -345,7 +352,9 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
     pdf.paragrafo(linhas, altura=6)
     pdf.ln(6)
 
-    # ── 4. Tabela detalhada ──
+    _secao_testes(pdf, dados.get("analise_preditiva", []), dados.get("conclusao", ""))
+
+    # ── 5. Tabela detalhada ──
     sufixo = "completo" if not (dados.get("inicio") or dados.get("fim")) else "periodo"
     nome = (
         f"sentcrypto_{moeda}_{fonte}_correlacao_{sufixo}_"
@@ -355,7 +364,7 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
         pdf.paragrafo(["Nenhuma hora com cotação disponível para detalhar."])
         return _salvar(pdf, nome)
 
-    pdf.titulo_secao(f"4. Detalhamento por Hora ({len(pontos)} horas)")
+    pdf.titulo_secao(f"5. Detalhamento por Hora ({len(pontos)} horas)")
     if sem_preco:
         pdf.paragrafo([
             f"{sem_preco} hora(s) com posts mas sem cotação na Binance foram "
@@ -401,6 +410,53 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
     pdf.set_text_color(*COR_PRETO)
 
     return _salvar(pdf, nome)
+
+
+def _secao_testes(pdf: "SentCryptoPDF", horizontes: list[dict], conclusao: str) -> None:
+    """Seção 4: o sentimento antecipa o preço? Testes e baselines por horizonte."""
+    pdf.titulo_secao("4. Análise Preditiva e Testes Estatísticos", tamanho=14)
+    pdf.paragrafo([
+        "\"Mesma hora\" compara os posts com o candle da própria hora (reação).",
+        "Os horizontes +Nh vão do fechamento da hora dos posts até N horas depois:",
+        "é o que mede se o sentimento ANTECIPA o preço.",
+        "",
+        "p-valor: teste binomial exato contra 50% (acaso). Abaixo de 0,05 = significativo.",
+        "Baselines nas mesmas horas: \"sempre sobe\" e momentum (repete o último candle).",
+        "Pearson: Sentiment Score x retorno, p-valor por permutação (1000 sorteios).",
+    ], altura=5)
+    pdf.ln(2)
+
+    if not horizontes:
+        pdf.multi_cell(0, 5, pdf.txt(conclusao), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+        return
+
+    larguras = [22, 12, 18, 28, 18, 22, 22, 24]
+    titulos = ["Horizonte", "n", "Acerto", "IC 95%", "p-valor",
+               "Sempre sobe", "Momentum", "Pearson (p)"]
+    pdf.cabecalho_tabela(larguras, titulos, tamanho=7)
+    for h in horizontes:
+        ic = h["ic95_pct"]
+        r = h["pearson"]
+        valores = [
+            h["rotulo"],
+            str(h["total_comparavel"]),
+            f"{h['taxa_acerto_pct']}%" if h["taxa_acerto_pct"] is not None else "-",
+            f"{ic[0]}–{ic[1]}%" if ic else "-",
+            f"{h['p_valor']:.3f}" if h["p_valor"] is not None else "-",
+            f"{h['baseline_sempre_sobe_pct']}%" if h["baseline_sempre_sobe_pct"] is not None else "-",
+            f"{h['baseline_momentum_pct']}%" if h["baseline_momentum_pct"] is not None else "-",
+            f"{r:+.2f} ({h['pearson_p_valor']:.2f})" if r is not None else "-",
+        ]
+        pdf.set_text_color(*(COR_POSITIVO if h["significativo"] else COR_PRETO))
+        for largura, valor in zip(larguras, valores):
+            pdf.cell(largura, 6, pdf.txt(valor), border=1, align="C")
+        pdf.ln()
+    pdf.set_text_color(*COR_PRETO)
+    pdf.ln(3)
+    pdf.set_font(pdf.fonte, "B", 10)
+    pdf.multi_cell(0, 6, pdf.txt(f"Conclusão: {conclusao}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
 
 
 def _rotulo_periodo(inicio: str | None, fim: str | None) -> str:

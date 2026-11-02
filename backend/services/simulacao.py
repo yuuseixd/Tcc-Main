@@ -32,6 +32,10 @@ Para cada hora, em ordem cronológica:
      compra, o que exige uma nova perna de queda antes da próxima compra
      (sem isso, compraria em toda hora abaixo do pico antigo).
 
+Cada compra e cada venda paga ``taxa_operacao_pct`` sobre o valor operado
+(padrão 0,1%, a taxa spot da Binance). O buy & hold paga a mesma taxa na
+entrada, para a comparação ser justa.
+
 Ao final, posições ainda abertas são marcadas a mercado (preço da última
 hora) como lucro não realizado, separado do lucro realizado das vendas.
 Um benchmark "buy & hold" (comprar tudo no primeiro preço, manter até o
@@ -96,6 +100,9 @@ def _resultado_vazio(
 
 MODOS_VALIDOS = ("fomo", "flat")
 
+# Taxa spot padrão da Binance (maker/taker sem desconto), em %.
+TAXA_OPERACAO_PADRAO_PCT = 0.1
+
 
 def simular_investimento(
     db: Session,
@@ -110,6 +117,7 @@ def simular_investimento(
     percentual_perda_aceita: float,
     modo: str = "fomo",
     fonte: str = "X",
+    taxa_operacao_pct: float = TAXA_OPERACAO_PADRAO_PCT,
 ) -> dict:
     """Roda o backtest e devolve trades, série de patrimônio e resumo.
 
@@ -130,6 +138,7 @@ def simular_investimento(
         "percentual_lucro_venda": percentual_lucro_venda,
         "percentual_queda_compra": percentual_queda_compra,
         "percentual_perda_aceita": percentual_perda_aceita,
+        "taxa_operacao_pct": taxa_operacao_pct,
     }
 
     agrupado: dict = {}
@@ -190,7 +199,7 @@ def simular_investimento(
     resultado = _rodar_backtest(
         moeda_u, perfis, candles, agrupado, capital_inicial,
         valor_por_compra, percentual_lucro_venda, percentual_queda_compra,
-        percentual_perda_aceita, modo,
+        percentual_perda_aceita, modo, taxa_operacao_pct,
     )
     resultado["parametros"]["fonte"] = fonte
     return resultado
@@ -207,8 +216,11 @@ def _rodar_backtest(
     percentual_queda_compra: float,
     percentual_perda_aceita: float,
     modo: str = "fomo",
+    taxa_operacao_pct: float = TAXA_OPERACAO_PADRAO_PCT,
 ) -> dict:
     caixa = capital_inicial
+    taxa = taxa_operacao_pct / 100
+    custos = 0.0
     pico: float | None = None
     posicoes: list[dict] = []
     trades: list[dict] = []
@@ -245,7 +257,10 @@ def _rodar_backtest(
                 motivo = "perda"
 
             if motivo:
-                valor_venda = pos["qtd"] * preco
+                bruto = pos["qtd"] * preco
+                custo = bruto * taxa
+                custos += custo
+                valor_venda = bruto - custo
                 lucro = valor_venda - pos["valor_investido"]
                 caixa += valor_venda
                 trades.append(
@@ -257,6 +272,7 @@ def _rodar_backtest(
                         "preco": round(preco, 2),
                         "qtd": pos["qtd"],
                         "valor": round(valor_venda, 2),
+                        "taxa": round(custo, 4),
                         "preco_entrada": round(pos["preco_entrada"], 2),
                         "lucro": round(lucro, 2),
                         "lucro_pct": round(
@@ -282,7 +298,10 @@ def _rodar_backtest(
         )
 
         if sinal_compra and caixa >= valor_por_compra:
-            qtd = valor_por_compra / preco
+            # A taxa sai do valor da compra: entra menos moeda na posição.
+            custo = valor_por_compra * taxa
+            custos += custo
+            qtd = (valor_por_compra - custo) / preco
             caixa -= valor_por_compra
             posicoes.append(
                 {
@@ -301,6 +320,7 @@ def _rodar_backtest(
                     "preco": round(preco, 2),
                     "qtd": qtd,
                     "valor": round(valor_por_compra, 2),
+                    "taxa": round(custo, 4),
                     "sentiment_score": grupo.sentiment_score if grupo else None,
                 }
             )
@@ -348,7 +368,7 @@ def _rodar_backtest(
         round(lucro_total / capital_inicial * 100, 2) if capital_inicial else 0.0
     )
 
-    qtd_bh = capital_inicial / preco_inicial if preco_inicial else 0.0
+    qtd_bh = capital_inicial * (1 - taxa) / preco_inicial if preco_inicial else 0.0
     patrimonio_bh = qtd_bh * preco_final
     lucro_bh_pct = (
         round((patrimonio_bh - capital_inicial) / capital_inicial * 100, 2)
@@ -372,6 +392,7 @@ def _rodar_backtest(
         "lucro_nao_realizado": round(lucro_nao_realizado, 2),
         "lucro_total": round(lucro_total, 2),
         "lucro_total_pct": lucro_total_pct,
+        "custos_totais": round(custos, 2),
         "buy_and_hold": {
             "preco_inicial": round(preco_inicial, 2),
             "preco_final": round(preco_final, 2),
@@ -405,6 +426,7 @@ def _rodar_backtest(
             "percentual_lucro_venda": percentual_lucro_venda,
             "percentual_queda_compra": percentual_queda_compra,
             "percentual_perda_aceita": percentual_perda_aceita,
+            "taxa_operacao_pct": taxa_operacao_pct,
         },
         "vazio": False,
         "mensagem": None,

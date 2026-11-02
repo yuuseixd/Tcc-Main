@@ -784,6 +784,7 @@ async def simular_investimento(
         body.capital_inicial, body.valor_por_compra,
         body.percentual_lucro_venda, body.percentual_queda_compra,
         body.percentual_perda_aceita, body.modo, body.fonte,
+        body.taxa_operacao_pct,
     )
 
 

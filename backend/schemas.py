@@ -77,6 +77,9 @@ class SimulacaoInvestimentoRequest(BaseModel):
     # lucro — limita o prejuízo em vez de deixar a posição aberta esperando
     # uma recuperação que pode não vir.
     percentual_perda_aceita: float = Field(10.0, gt=0, le=100)
+    # Custo por operação (compra ou venda), em %. 0,1% é a taxa spot padrão da
+    # Binance; sem ele o backtest superestima o resultado de quem opera muito.
+    taxa_operacao_pct: float = Field(0.1, ge=0, le=5)
 
     @field_validator("moeda")
     @classmethod
