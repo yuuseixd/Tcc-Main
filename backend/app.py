@@ -28,6 +28,7 @@ from routers import (
     contas,
     correlacao,
     mercado,
+    padroes,
     relatorios,
     saude,
     simulacao,
@@ -84,3 +85,4 @@ app.include_router(simulacao.router)
 app.include_router(relatorios.router)
 app.include_router(coleta.router)
 app.include_router(analise.router)
+app.include_router(padroes.router)

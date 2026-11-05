@@ -14,6 +14,7 @@ from routers.deps import (
     validar_moeda,
 )
 from services import correlacao as svc_correlacao
+from services import posts as svc_posts
 from services import relatorios as svc_relatorios
 
 router = APIRouter()
@@ -78,6 +79,7 @@ async def gerar_relatorio_correlacao(
                 else "Nenhum post analisado ainda. Faça uma coleta antes."
             ),
         )
+    dados["volume"] = svc_posts.volume_analisado(db, moeda_u, fonte_n, inicio, fim)
 
     caminho = await run_in_threadpool(
         svc_relatorios.gerar_relatorio_correlacao, dados

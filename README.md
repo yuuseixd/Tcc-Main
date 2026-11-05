@@ -48,6 +48,9 @@ humor das redes sociais antecede o movimento do mercado.
    Reddit (endpoints JSON públicos).
 2. **Filtro de relevância** — descarta textos que não falam de cripto. Eles são
    salvos com `sentimento = "nulo"` para auditoria, mas ficam fora das métricas.
+   Posts lidos que nem citam a moeda não são salvos, mas são contados
+   (tabela `posts_descartados`, só a identidade do post): o dashboard e o PDF
+   mostram quantos posts passaram pela triagem e quantos foram aproveitados.
 3. **Classificação** — o BERT atribui de 1 a 5 estrelas, traduzidas em
    `negativo` / `neutro` / `positivo` e num índice numérico de 0 a 1.
 4. **Agregação** — os posts são agrupados por hora cheia (UTC).
@@ -75,6 +78,7 @@ backend/
     correlacao.py         Agregação por hora, métricas e análise preditiva
     estatistica.py        Teste binomial, IC de Wilson, Pearson por permutação, baselines
     simulacao.py          Backtest de compra/venda com taxa por operação
+    padroes.py            Detecção de 12 padrões gráficos, projeção do alvo e backtest
     posts.py              Persistência com deduplicação
     relatorios.py         Geração dos PDFs
   collectors/
@@ -116,6 +120,33 @@ duas estratégias ingênuas, mas **nenhum horizonte difere do acaso** a 5%. Com
 ~85 horas comparáveis o intervalo de confiança tem ~20 pontos de largura: o
 resultado é um indício, não uma evidência. A conclusão do próprio sistema
 aparece no dashboard e no PDF. Os números mudam a cada coleta.
+
+**Padrões gráficos (Analisador)** — backtest de 12 padrões em 8 moedas
+(`python tools/backtest_padroes.py`, gerado em 04/11/2026). Acerto = atingir
+o alvo do movimento medido antes do stop; vantagem = pontos acima de uma
+entrada qualquer com o mesmo alvo e stop. Intervalos de 4h (mínimo), 12h, 24h
+e semanal. Os três melhores de cada intervalo:
+
+| Intervalo | Padrão | Casos | Acerto | Entrada qualquer | Vantagem | p-valor |
+|---|---|---:|---:|---:|---:|---:|
+| 4h | Fundo duplo | 238 | 55,5% | 41,3% | +14,2 pp | < 0,001 ★ |
+| 4h | Topo triplo | 72 | 54,2% | 40,0% | +14,1 pp | 0,016 |
+| 4h | Retângulo de baixa | 76 | 52,6% | 42,5% | +10,1 pp | 0,082 |
+| 12h | Retângulo de baixa | 53 | 62,3% | 40,2% | +22,0 pp | 0,002 |
+| 12h | Fundo duplo | 159 | 57,9% | 40,7% | +17,2 pp | < 0,001 ★ |
+| 12h | Topo duplo | 159 | 47,8% | 36,2% | +11,6 pp | 0,003 |
+| 24h | Triângulo ascendente | 101 | 48,5% | 35,0% | +13,6 pp | 0,006 |
+| 24h | Fundo duplo | 111 | 63,1% | 50,7% | +12,4 pp | 0,010 |
+| 24h | Retângulo de alta | 25 | 68,0% | 55,7% | +12,3 pp | 0,234 |
+
+★ = significativo mesmo com a correção de Bonferroni para as 48 comparações
+(12 padrões × 4 intervalos; p < 0,00104). **Leitura:** o fundo duplo é o
+único com evidência forte, e em dois intervalos; o OCOI, famoso pela "alta
+confiabilidade", ficou entre os últimos em 4h e 12h (−0,5 e −0,9 pp). Com 48
+testes, 2 ou 3 "significativos" a 5% são esperados por acaso — por isso a
+correção. No **semanal** o histórico (desde 2017) rende no máximo 22 casos
+por padrão: nenhum chega às 30 avaliações que o ranking exige para concluir.
+O ranking completo está no dashboard e em `backend/backtest_padroes.json`.
 
 ---
 
@@ -254,7 +285,24 @@ python tools/coletor_continuo.py --once
 
 # Escolhendo moedas e perfis
 python tools/coletor_continuo.py --moedas BTC ETH --perfis whale_alert CoinDesk
+
+# Conferir se os perfis de perfis_x.txt existem e são públicos
+python tools/verificar_perfis.py
 ```
+
+Sem `--perfis`, a lista vem de `backend/perfis_x.txt` (111 contas, por
+categoria). Cada rodada lê só `--lote` perfis (padrão 25): ler todos de uma vez
+estoura o limite da conta do X. Os marcados com `*` (os 5 que mais postam) são
+lidos em **toda** rodada; os outros 106 giram 20 por rodada, cada um relido a
+cada ~1h46. O X devolve ~20 tweets por leitura, e mesmo os perfis mais ativos
+(até ~4 tweets/h) levam mais de 4 h para postar 20, então nada se perde entre
+leituras.
+
+**Sem data limite, por quantidade:** cada leitura traz os ~20 tweets mais
+recentes do perfil, sejam de hoje ou de anos atrás (tweets fixados, contas
+paradas). Por isso posts com mais de **60 dias** na hora da coleta são
+ignorados (`IDADE_MAXIMA_POST_DIAS` no `.env`; 0 desliga). Posts antigos que
+já estavam no banco antes desse filtro continuam lá.
 
 Ele grava em `backend/logs/coleta.log` (rotativo) e mostra a cada rodada
 quantas **horas distintas** a base já cobre — esse é o número que limita a
@@ -271,7 +319,7 @@ seguras: posts já salvos são descartados antes de chegar ao modelo.
 
 ```bash
 cd backend
-python -m pytest tests/ -q      # 213 testes
+python -m pytest tests/ -q      # 305 testes
 ```
 
 ```bash
@@ -345,6 +393,36 @@ O backtest cobra **0,1% por operação** (taxa spot da Binance), na compra e na
 venda, e o buy & hold paga a mesma taxa de entrada. Sem custo, uma estratégia
 que opera muito parece melhor do que é. A taxa é ajustável pelo campo
 `taxa_operacao_pct` de `/simulacao/investimento`.
+
+### Padrões gráficos (price action)
+
+`services/padroes.py`, determinístico e em Python puro (`GET /padroes`,
+`GET /padroes/ranking`). Os padrões de baixa usam o mesmo código dos de alta
+com o sinal invertido: acertar é o preço cair até o alvo antes de subir ao stop.
+
+| Padrão | Regras | Rompimento | Alvo | Stop |
+|---|---|---|---|---|
+| OCOI / OCO | cabeça ≥ 15% mais funda que os ombros, ombros parecidos (profundidade e duração), tendência antes | linha de pescoço (reta pelos 2 topos/fundos) | pescoço ± cabeça→pescoço | ombro direito |
+| Fundo / topo duplo e triplo | 2 ou 3 fundos (topos) no mesmo nível (±20% da altura), tendência antes | reação mais distante (horizontal) | nível ± altura | fundo (topo) mais extremo |
+| Retângulo de alta / baixa | ≥ 2 topos e 2 fundos em níveis estáveis, vindo de alta (baixa) | resistência (suporte) | nível ± altura | lado oposto |
+| Triângulo ascendente / descendente | lado plano estável, o outro avançando ≥ 30% da altura | lado plano | nível ± altura | último pivô do lado inclinado |
+| Flâmula de alta / baixa | mastro + consolidação convergente que recua ≤ 50% e dura ≤ 4x o mastro | lado convergente na direção do mastro | rompimento ± mastro | último pivô oposto |
+
+Comum a todos:
+
+1. **Zigzag** em três escalas (2x, 3x e 4x a amplitude mediana dos candles)
+   marca topos e fundos; o mesmo padrão visto em duas escalas conta uma vez.
+   Duplos contidos num triplo contam só como triplo.
+2. **Confirmação**: fechamento além da linha de rompimento em até 1x a largura
+   do padrão; fechar além do stop antes disso invalida.
+3. **Desfecho**: alvo ou stop em até 2x a largura; os dois no mesmo candle
+   contam stop.
+4. **Linha de base**: para cada padrão, a taxa com que uma entrada em qualquer
+   candle (300 amostras) bateria o mesmo alvo (%) antes do mesmo stop (%), no
+   mesmo horizonte e direção. O teste binomial compara o padrão com essa taxa.
+
+Os parâmetros foram fixados antes do backtest e não foram ajustados ao
+resultado.
 
 ---
 

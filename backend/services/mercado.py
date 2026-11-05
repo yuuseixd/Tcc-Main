@@ -42,6 +42,11 @@ class Candle:
     timestamp: datetime          # UTC naive, início do candle
     abertura: float
     fechamento: float
+    # Extremos do período — usados pela leitura de padrões gráficos
+    # (services/padroes.py). Opcionais: o resto do sistema só usa abertura e
+    # fechamento, e candles salvos no banco não guardam esses valores.
+    maxima: float | None = None
+    minima: float | None = None
 
     @property
     def variacao(self) -> float:
@@ -117,6 +122,8 @@ def buscar_klines(
                     timestamp=de_timestamp_ms(k[0]),
                     abertura=float(k[1]),
                     fechamento=float(k[4]),
+                    maxima=float(k[2]),
+                    minima=float(k[3]),
                 )
             )
         except (IndexError, TypeError, ValueError):

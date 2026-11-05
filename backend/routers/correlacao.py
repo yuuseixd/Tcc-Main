@@ -8,6 +8,7 @@ from db import get_db
 from routers.deps import parse_periodo, usuario_atual, validar_fonte, validar_moeda
 from services import comparacao as svc_comparacao
 from services import correlacao as svc_correlacao
+from services import posts as svc_posts
 
 router = APIRouter()
 
@@ -25,9 +26,11 @@ async def correlacao_sentimento_preco(
     fonte_n = validar_fonte(fonte)
     inicio, fim = parse_periodo(data_inicio, data_fim)
     # A função consulta a Binance (I/O bloqueante) — fora do event loop.
-    return await run_in_threadpool(
+    dados = await run_in_threadpool(
         svc_correlacao.calcular_correlacao, db, moeda_u, fonte_n, inicio, fim
     )
+    dados["volume"] = svc_posts.volume_analisado(db, moeda_u, fonte_n, inicio, fim)
+    return dados
 
 
 @router.get("/comparacao-fontes", tags=["correlacao"], dependencies=[Depends(usuario_atual)])

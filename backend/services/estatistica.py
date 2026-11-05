@@ -101,7 +101,9 @@ def intervalo_wilson(acertos: int, n: int, z: float = 1.96) -> tuple[float, floa
     denom = 1 + z**2 / n
     centro = (phat + z**2 / (2 * n)) / denom
     margem = z * math.sqrt(phat * (1 - phat) / n + z**2 / (4 * n**2)) / denom
-    return (round((centro - margem) * 100, 1), round((centro + margem) * 100, 1))
+    # Com 0 ou n acertos a conta dá -0.0 / 100.0000001 por arredondamento.
+    return (round(max(0.0, centro - margem) * 100, 1),
+            round(min(1.0, centro + margem) * 100, 1))
 
 
 def _sinal(valor: float, limiar: float) -> int:

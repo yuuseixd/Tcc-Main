@@ -31,15 +31,22 @@ async def coletar_reddit(
     # Falhas por subreddit voltam para o usuário: uma coleta vazia por bloqueio
     # do Reddit é indistinguível de "não há posts" se o motivo não aparecer.
     avisos: list[str] = []
+    descartados: list[dict] = []
     brutos = await run_in_threadpool(
         coletar_posts_reddit_json,
         body.subreddits, moeda_u, body.limite_por_sub, body.ordenacao,
-        0.8, avisos,
+        0.8, avisos, descartados,
     )
 
+    brutos, antigos = svc_posts.separar_antigos(brutos)
+    descartados, antigos_descartados = svc_posts.separar_antigos(descartados)
     resultado = await run_in_threadpool(
         svc_posts.salvar_posts, db, moeda_u, "Reddit", brutos
     )
+    resultado.descartados = await run_in_threadpool(
+        svc_posts.registrar_descartados, db, moeda_u, "Reddit", descartados
+    )
+    resultado.antigos = antigos + antigos_descartados
 
     resposta = {**resultado.como_dict(), "moeda": moeda_u,
                 "subreddits": body.subreddits, "avisos": avisos}
@@ -55,16 +62,25 @@ async def coletar_x(body: ColetaXRequest, db: Session = Depends(get_db)):
     moeda_u = validar_moeda(body.moeda)
 
     avisos: list[str] = []
+    descartados: list[dict] = []
     try:
         brutos = await run_in_threadpool(
-            coletar_tweets_x, body.perfis, moeda_u, body.limite_por_perfil, avisos
+            coletar_tweets_x, body.perfis, moeda_u, body.limite_por_perfil,
+            avisos, descartados,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    # Tweets fixados e de contas paradas: fora do período estudado.
+    brutos, antigos = svc_posts.separar_antigos(brutos)
+    descartados, antigos_descartados = svc_posts.separar_antigos(descartados)
     resultado = await run_in_threadpool(
         svc_posts.salvar_posts, db, moeda_u, "X", brutos
     )
+    resultado.descartados = await run_in_threadpool(
+        svc_posts.registrar_descartados, db, moeda_u, "X", descartados
+    )
+    resultado.antigos = antigos + antigos_descartados
     return {**resultado.como_dict(), "moeda": moeda_u,
             "perfis_consultados": body.perfis, "avisos": avisos}
 

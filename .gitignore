@@ -10,6 +10,7 @@ venv/
 .env.local
 backend/.env
 backend/x_cookies.json
+backend/x_ids_perfis.json
 *cookies*.json
 
 # Banco de dados local (gerado em runtime)

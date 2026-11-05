@@ -1,12 +1,26 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../api";
 import { numero } from "../format";
 import { Pill, Topline, corSentimento, rotuloSentimento } from "../components/ui";
+import AnalisadorGraficos from "./AnalisadorGraficos";
+import RankingPadroes from "./RankingPadroes";
 
-export default function Analisador({ moeda, notify }) {
+export default function Analisador({ moeda, setMoeda, notify }) {
   const [texto, setTexto] = useState("");
   const [resultado, setResultado] = useState(null);
   const [analisando, setAnalisando] = useState(false);
+  // Padrão e intervalo do analisador de gráficos — o ranking também os muda.
+  const [tipo, setTipo] = useState("ocoi");
+  const [intervalo, setIntervalo] = useState("4h");
+  const graficos = useRef(null);
+
+  // Do ranking: abre o padrão no intervalo (e na moeda, se filtrada) escolhidos.
+  const verNoGrafico = (novoTipo, novoIntervalo, novaMoeda) => {
+    setTipo(novoTipo);
+    setIntervalo(novoIntervalo);
+    if (novaMoeda && novaMoeda !== moeda) setMoeda(novaMoeda);
+    graficos.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
 
   const analisar = async () => {
     if (!texto.trim()) return;
@@ -23,7 +37,7 @@ export default function Analisador({ moeda, notify }) {
 
   return (
     <section className="screen" aria-label="Analisador">
-      <Topline titulo="Analisador" />
+      <Topline titulo="Analisador" moeda={moeda} setMoeda={setMoeda} />
 
       <div className="card stack">
         <div>
@@ -64,13 +78,11 @@ export default function Analisador({ moeda, notify }) {
         )}
       </div>
 
-      <div className="card dash">
-        <Pill>Em breve</Pill>
-        <h2>Analisador de gráficos</h2>
-        <p className="hint">
-          Espaço reservado para a próxima funcionalidade. Esta área fica pronta para receber o
-          analisador assim que ele for definido.
-        </p>
+      <RankingPadroes moeda={moeda} onEscolher={verNoGrafico} />
+
+      <div ref={graficos}>
+        <AnalisadorGraficos moeda={moeda} notify={notify} tipo={tipo} setTipo={setTipo}
+          intervalo={intervalo} setIntervalo={setIntervalo} />
       </div>
     </section>
   );

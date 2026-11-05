@@ -304,6 +304,7 @@ def gerar_relatorio_correlacao(dados: dict) -> Path:
         f"Score médio no período analisado: {resumo['score_medio']:+.4f}",
         f"Horas com posts: {resumo['total_horas_analisadas']}   |   "
         f"Posts considerados: {resumo['total_posts']}",
+        *_linhas_volume(dados.get("volume")),
     ])
     pdf.ln(4)
 
@@ -466,6 +467,23 @@ def _rotulo_periodo(inicio: str | None, fim: str | None) -> str:
     de = f"{datetime.fromisoformat(inicio):%d/%m/%Y}" if inicio else "início"
     ate = f"{datetime.fromisoformat(fim):%d/%m/%Y}" if fim else "hoje"
     return f"Período {de} a {ate}"
+
+
+def _linhas_volume(volume: dict | None) -> list[str]:
+    """Linhas do volume da triagem (posts lidos x aproveitados) para a seção 1."""
+    if not volume or not volume["analisados"]:
+        return []
+    linhas = [
+        "",
+        f"Posts analisados na triagem: {volume['analisados']}   |   "
+        f"Relevantes: {volume['relevantes']}   |   Descartados: {volume['descartados']}",
+    ]
+    if volume["contagem_desde"]:
+        desde = datetime.fromisoformat(volume["contagem_desde"].rstrip("Z"))
+        linhas.append(
+            f"(descartados por não citarem a moeda são contados desde {desde:%d/%m/%Y})"
+        )
+    return linhas
 
 
 def _pct(valor: float | None) -> str:

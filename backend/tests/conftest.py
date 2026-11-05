@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
+from routers import padroes as rotas_padroes
 from services import correlacao as svc_correlacao
 
 
@@ -16,5 +17,7 @@ from services import correlacao as svc_correlacao
 def _cache_de_precos_limpo():
     """Cada teste simula a Binance do seu jeito; o cache não pode vazar."""
     svc_correlacao.limpar_cache()
+    rotas_padroes.limpar_cache()
     yield
     svc_correlacao.limpar_cache()
+    rotas_padroes.limpar_cache()

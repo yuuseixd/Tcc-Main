@@ -89,6 +89,16 @@ INDICE_POSITIVO = _env_float("INDICE_POSITIVO", 0.8)
 
 # ── Coleta do X ─────────────────────────────────────────────────────────────
 X_CACHE_TTL = _env_int("X_CACHE_TTL", 300)
+# Posts com mais de N dias na hora da coleta são ignorados. A coleta lê os
+# ~20 tweets mais recentes de cada perfil, sem filtro de data: tweets fixados
+# e contas paradas traziam posts de anos atrás, horas esparsas e fora do
+# período estudado. 0 desliga o filtro.
+IDADE_MAXIMA_POST_DIAS = _env_int("IDADE_MAXIMA_POST_DIAS", 60)
+# Pausa entre um perfil e o próximo: rajadas seguidas são o que dispara o 429.
+X_PAUSA_ENTRE_PERFIS = _env_float("X_PAUSA_ENTRE_PERFIS", 1.5)
+# Num 429, espera até este tanto (s) pelo reset do limite e tenta de novo.
+# Se o reset demorar mais, a conta fica em pausa até lá (ver x_collector).
+X_ESPERA_MAX_429 = _env_int("X_ESPERA_MAX_429", 30)
 
 # ── Coleta do Reddit ────────────────────────────────────────────────────────
 # Sem credenciais, o coletor usa os endpoints JSON públicos — que o Reddit

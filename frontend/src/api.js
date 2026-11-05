@@ -157,6 +157,12 @@ export const api = {
   simularInvestimento: (corpo, signal) =>
     request("/simulacao/investimento", { method: "POST", body: corpo, signal }),
 
+  padroes: (moeda, intervalo, signal) =>
+    request(`/padroes${qs({ moeda, intervalo })}`, { signal }),
+
+  rankingPadroes: (moeda, intervalo, signal) =>
+    request(`/padroes/ranking${qs({ moeda, intervalo })}`, { signal }),
+
   analisarTexto: (texto, moeda) =>
     request("/analisar-texto", { method: "POST", body: { texto, moeda } }),
 

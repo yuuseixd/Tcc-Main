@@ -40,6 +40,7 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
   const [pontos, soPreco, setPontos] = useHistorico();
   const [preco, setPreco] = useState(null);
   const [resumo, setResumo] = useState(null);
+  const [volume, setVolume] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
@@ -87,9 +88,14 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
       if (!foiCancelada(e)) setPreco(null);
     }
     try {
-      setResumo((await api.correlacao(moeda, fonte, dataInicio, dataFim, signal)).resumo);
+      const corr = await api.correlacao(moeda, fonte, dataInicio, dataFim, signal);
+      setResumo(corr.resumo);
+      setVolume(corr.volume || null);
     } catch (e) {
-      if (!foiCancelada(e)) setResumo(null);
+      if (!foiCancelada(e)) {
+        setResumo(null);
+        setVolume(null);
+      }
     }
     if (abortar.current === controle) setCarregando(false);
   }, [moeda, fonte, dataInicio, dataFim, notify, setPontos]);
@@ -267,9 +273,14 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
             </div>
             <div className="card kpi">
               <span className="l">Posts analisados</span>
-              <span className="v">{resumo ? numero(resumo.total_posts) : "—"}</span>
+              <span className="v">
+                {volume?.analisados ? numero(volume.analisados) : resumo ? numero(resumo.total_posts) : "—"}
+              </span>
               <span className="s">
-                {resumo ? `em ${numero(resumo.total_horas_analisadas)} horas com posts` : ""}
+                {volume?.analisados
+                  ? `${numero(volume.relevantes)} sobre ${moeda} e ${numero(volume.descartados)} ` +
+                    `descartados (sem relação) · ${numero(resumo?.total_horas_analisadas ?? 0)} horas com posts`
+                  : resumo ? `em ${numero(resumo.total_horas_analisadas)} horas com posts` : ""}
               </span>
             </div>
           </div>

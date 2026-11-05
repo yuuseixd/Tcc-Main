@@ -1,0 +1,135 @@
+# Perfis do X lidos pelo coletor contínuo (tools/coletor_continuo.py).
+# Um @ por linha; "#" comenta. Ordem não importa: o coletor faz rodízio.
+#
+# Critério: contas em inglês (o modelo BERT é treinado em inglês) que postam
+# sobre cripto com frequência. A mistura de categorias evita que a amostra
+# fique enviesada para um só tipo de voz (só notícias, só "bulls" etc.).
+#
+# "*" na frente = prioritário: lido em toda rodada (os 5 que mais postam,
+# medidos em 04/11/2026: 2,9 a 3,9 tweets/h). Os demais entram em rodízio.
+#
+# Todos conferidos no X em 04/11/2026 (existem, são públicos, têm posts).
+# Conferir de novo com:  python tools/verificar_perfis.py
+
+# ── Notícias e mídia ───────────────────────────────────────────────────────
+CoinDesk
+*Cointelegraph
+theblockco
+Blockworks
+*decryptmedia
+BitcoinMagazine
+CryptoSlate
+BeInCrypto
+*DefiantNews
+WuBlockchain
+tier10k
+WatcherGuru
+BitcoinArchive
+documentingbtc
+crypto            # Bloomberg Crypto
+Bitcoin
+CoinMarketCap
+coingecko
+CoinBureau
+AltcoinDaily
+
+# ── Dados on-chain e mercado ───────────────────────────────────────────────
+whale_alert
+glassnode
+*glassnodealerts
+lookonchain
+cryptoquant_com
+ki_young_ju
+arkham
+nansen_ai
+EmberCN
+KaikoData
+coinglass_com
+DefiLlama
+coinmetrics
+WillyWoo
+caprioleio
+_Checkmatey_
+100trillionUSD    # PlanB
+
+# ── Análise técnica e trading ──────────────────────────────────────────────
+PeterLBrandt
+rektcapital
+CryptoCred
+Pentosh1
+HsakaTrades
+CryptoKaleo
+AltcoinSherpa
+CryptoCapo_
+scottmelker
+CryptoTony__
+crypto_birb
+TheCryptoDog
+Trader_XO
+IncomeSharks
+CredibleCrypto
+milesdeutscher
+MMCrypto
+CryptoBullet1
+TechDev_52
+JacobCanfield
+CryptoJelleNL
+Tradermayne
+CryptoWendyO
+Rewkang
+blknoiz06         # Ansem
+MustStopMurad
+
+# ── Fundadores, executivos e investidores ──────────────────────────────────
+saylor
+APompliano
+RaoulGMI
+novogratz
+cz_binance
+brian_armstrong
+VitalikButerin
+justinsuntron
+CryptoHayes
+ErikVoorhees
+jespow
+balajis
+Excellion         # Samson Mow
+adam3us
+danheld
+nic_carter
+CaitlinLong_
+LynAldenContact
+jackmallers
+IvanOnTech
+
+# ── Educação, podcasts e pesquisa ──────────────────────────────────────────
+aantonop
+PrestonPysh
+jimmysong
+MartyBent
+*laurashin
+RyanSAdams
+bankless
+TrustlessState
+sassal0x
+DefiIgnas
+zachxbt
+cobie
+JSeyff
+EricBalchunas
+NateGeraci
+
+# ── Exchanges, gestoras e projetos (tom institucional) ─────────────────────
+binance
+coinbase
+krakenfx
+Bybit_Official
+okx
+Gemini
+Grayscale
+CoinSharesCo
+SwanBitcoin
+Blockstream
+circle
+ethereum
+solana

@@ -132,6 +132,7 @@ def coletar_posts_reddit_json(
     ordenacao: str = "new",
     sleep_s: float = 0.8,
     avisos: List[str] | None = None,
+    descartados: List[Dict] | None = None,
 ) -> List[Dict]:
     """Coleta posts dos subreddits e filtra os que mencionam a moeda.
 
@@ -142,6 +143,8 @@ def coletar_posts_reddit_json(
     ``avisos`` (opcional) recebe as falhas por subreddit, para que a API possa
     explicar ao usuário por que a coleta voltou vazia em vez de só dizer
     "0 posts".
+
+    ``descartados`` (opcional) recebe os posts lidos que não citam a moeda.
     """
     if ordenacao not in ORDENACOES_VALIDAS:
         logger.warning("Ordenação '%s' inválida, usando 'new'.", ordenacao)
@@ -233,19 +236,25 @@ def coletar_posts_reddit_json(
             if not texto:
                 continue
 
-            if not texto_menciona_moeda(texto, moeda):
-                continue
-
             post_id = post.get("id")
             # ``name`` é o fullname (ex.: t3_abc123) e é globalmente único.
             external_id = post.get("name") or (f"t3_{post_id}" if post_id else None)
+            created_utc = post.get("created_utc")
+
+            if not texto_menciona_moeda(texto, moeda):
+                if descartados is not None and external_id and created_utc:
+                    descartados.append({
+                        "external_id": external_id,
+                        "autor": f"r/{sub}",
+                        "timestamp_post": _to_datetime_utc(created_utc),
+                    })
+                continue
             if external_id and external_id in vistos:
                 continue
             if external_id:
                 vistos.add(external_id)
 
             permalink = post.get("permalink") or ""
-            created_utc = post.get("created_utc")
 
             resultados.append(
                 {

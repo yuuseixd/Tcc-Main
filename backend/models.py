@@ -105,3 +105,26 @@ class SocialPost(Base):
     score = Column(Float)                                    # confiança do BERT
     timestamp_post = Column(DateTime, nullable=False, index=True)
     timestamp_coleta = Column(DateTime, default=agora_utc)
+
+
+class PostDescartado(Base):
+    """Post lido na coleta e descartado por não citar a moeda.
+
+    Guarda só a identidade do post (sem texto): serve para contar quantos
+    posts passaram pela triagem, não para análise. Um post é contado uma vez
+    por moeda, mesmo que apareça em várias rodadas de coleta.
+    """
+
+    __tablename__ = "posts_descartados"
+    __table_args__ = (
+        UniqueConstraint("fonte", "moeda", "external_id", name="uq_descartado"),
+        Index("ix_descartado_consulta", "moeda", "fonte", "timestamp_post"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    moeda = Column(String(20), nullable=False)
+    fonte = Column(String(30), nullable=False)
+    external_id = Column(String(120), nullable=False)
+    autor = Column(String(120))
+    timestamp_post = Column(DateTime, nullable=False)
+    timestamp_coleta = Column(DateTime, default=agora_utc)
