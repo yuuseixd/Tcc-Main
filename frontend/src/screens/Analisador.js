@@ -52,7 +52,7 @@ export default function Analisador({ moeda, setMoeda, notify }) {
             id="texto-analise"
             value={texto}
             onChange={(e) => setTexto(e.target.value)}
-            placeholder="Cole aqui uma notícia, tweet ou comentário do Reddit..."
+            placeholder="Cole aqui uma notícia, tweet ou comentário..."
             maxLength={10000}
           />
         </div>

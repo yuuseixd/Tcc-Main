@@ -12,17 +12,6 @@ export const MOEDAS = [
 export const nomeDaMoeda = (sigla) =>
   MOEDAS.find((m) => m.sigla === sigla)?.nome || sigla;
 
-export const SUBREDDITS_DEFAULT = {
-  BTC: ["Bitcoin", "CryptoCurrency", "BitcoinMarkets"],
-  ETH: ["ethereum", "ethtrader", "CryptoCurrency"],
-  SOL: ["solana", "CryptoCurrency"],
-  DOGE: ["dogecoin", "CryptoCurrency"],
-  XRP: ["XRP", "Ripple", "CryptoCurrency"],
-  ADA: ["cardano", "CryptoCurrency"],
-  AVAX: ["Avax", "CryptoCurrency"],
-  LINK: ["Chainlink", "CryptoCurrency"],
-};
-
 export const INTERVALOS_COLETA = [
   { valor: 0, rotulo: "Desativada" },
   { valor: 3, rotulo: "A cada 3 min" },
@@ -115,11 +104,6 @@ export function estadoColetaX(cookiesOk, ultima) {
       };
   }
 }
-
-export const FONTES_SOCIAIS = [
-  { valor: "X", rotulo: "X" },
-  { valor: "Reddit", rotulo: "Reddit" },
-];
 
 const ORDEM_RISCO = { baixo: 0, médio: 1, alto: 2 };
 /** Maior risco que cada perfil encara sem receber um aviso. */

@@ -11,7 +11,7 @@ const TEMAS = [
 
 export default function Configuracoes({
   moeda, notify, tema, setTema, autoRefresh, setAutoRefresh, autoColeta,
-  setAutoColeta, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin, redditOauth,
+  setAutoColeta, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin,
   usuario, irParaPerfil, sair,
 }) {
   const statusX = estadoColetaX(twitterOk, xColeta);
@@ -91,20 +91,6 @@ export default function Configuracoes({
           <div className="btns">
             <button className="btn" type="button" onClick={abrirLogin}>Configurar cookies</button>
           </div>
-        </div>
-
-        <div className="card stack">
-          <div className="row-between">
-            <h2>Reddit</h2>
-            <Pill tom={redditOauth ? "pos" : "warn"}>
-              {redditOauth ? "Chaves configuradas" : "Sem chaves"}
-            </Pill>
-          </div>
-          <p className="hint">
-            {redditOauth
-              ? "A coleta usa o acesso oficial do Reddit."
-              : "Sem as chaves de acesso, o Reddit costuma recusar a coleta (erro 403). Crie as chaves em reddit.com/prefs/apps e preencha REDDIT_CLIENT_ID e REDDIT_CLIENT_SECRET no arquivo .env do servidor."}
-          </p>
         </div>
 
         <div className="card stack">

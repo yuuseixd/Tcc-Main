@@ -3,7 +3,7 @@
 **Análise de sentimento do mercado de criptomoedas com IA (BERT) aplicada a redes sociais.**
 
 Projeto de Trabalho de Conclusão de Curso. O sistema coleta publicações do X
-(Twitter) e do Reddit, classifica o sentimento de cada texto com um modelo BERT,
+(Twitter), classifica o sentimento de cada texto com um modelo BERT,
 cruza esse sentimento com a variação de preço obtida na Binance e mede se o
 humor das redes sociais antecede o movimento do mercado.
 
@@ -30,7 +30,7 @@ humor das redes sociais antecede o movimento do mercado.
 ```
 ┌──────────────┐   ┌─────────────┐   ┌──────────────┐   ┌─────────────┐
 │  Coleta      │   │  Filtro de  │   │  Classifica- │   │ Persistência│
-│  X / Reddit  │──▶│ relevância  │──▶│  ção (BERT)  │──▶│   SQLite    │
+│  X (Twitter) │──▶│ relevância  │──▶│  ção (BERT)  │──▶│   SQLite    │
 └──────────────┘   │   cripto    │   └──────────────┘   └──────┬──────┘
                    └─────────────┘                             │
 ┌──────────────┐                                               ▼
@@ -44,8 +44,7 @@ humor das redes sociais antecede o movimento do mercado.
                                               └────────────────────────────┘
 ```
 
-1. **Coleta** — posts do X (via cookies de sessão, syndication ou API v2) e do
-   Reddit (endpoints JSON públicos).
+1. **Coleta** — posts do X (via cookies de sessão, syndication ou API v2).
 2. **Filtro de relevância** — descarta textos que não falam de cripto. Eles são
    salvos com `sentimento = "nulo"` para auditoria, mas ficam fora das métricas.
    Posts lidos que nem citam a moeda não são salvos, mas são contados
@@ -83,7 +82,6 @@ backend/
     relatorios.py         Geração dos PDFs
   collectors/
     x_collector.py        Coleta do X (3 estratégias em cascata)
-    reddit_collector.py   Coleta do Reddit
     cookie_auth.py        Extração de cookies do navegador
   utils/
     tempo.py              Normalização de datas (tudo em UTC)
@@ -198,7 +196,7 @@ e sobrevivem à recriação dos containers. As credenciais vêm do `backend/.env
 docker compose cp backend/dados_amostra_pesquisa.db backend:/data/dados.db
 docker compose restart backend
 
-# Coleta contínua em segundo plano (X + Reddit a cada 20 min)
+# Coleta contínua em segundo plano (X a cada 20 min)
 docker compose --profile coleta up -d
 ```
 
@@ -228,63 +226,30 @@ A documentação interativa da API fica em <http://127.0.0.1:8000/docs>.
 1. Abra o dashboard e confirme que **API Online** está verde.
 2. Se for coletar do X, clique em **Configurar** e informe os cookies
    `auth_token` e `ct0` (instruções no próprio modal).
-3. Escolha a moeda e a fonte (**Reddit** ou **X / Twitter**).
-4. Clique em **Coletar Reddit** ou **Analisar e salvar**.
+3. Na aba **X / Twitter**, escolha a moeda e informe os perfis.
+4. Clique em **Analisar e salvar**.
 5. O gráfico de sentimento aparece; clique numa barra para gerar o PDF daquela
    hora, ou use **Gerar PDF** na seção de correlação.
-
----
-
-## Credenciais do Reddit
-
-Sem credenciais, a coleta usa os endpoints públicos — que o Reddit limita por
-IP e hoje recusa com **HTTP 403** na maioria das tentativas. Com um app
-registrado, a coleta passa a usar OAuth (~100 requisições por minuto).
-
-Leva dois minutos:
-
-1. Acesse <https://www.reddit.com/prefs/apps> logado
-2. Clique em **"are you a developer? create an app..."**
-3. Preencha — o tipo **precisa** ser `script`:
-
-   | Campo | Valor |
-   |-------|-------|
-   | name | `sentcrypto-tcc` |
-   | tipo | **script** |
-   | redirect uri | `http://localhost:8000` |
-
-4. Clique em **create app**
-5. No `backend/.env`:
-
-   ```bash
-   REDDIT_CLIENT_ID=<sequência sob o nome do app, à esquerda>
-   REDDIT_CLIENT_SECRET=<campo "secret">
-   REDDIT_USER_AGENT=python:sentcrypto-tcc:1.0 (by /u/seu_usuario)
-   ```
-
-Confira em <http://127.0.0.1:8000/status/reddit> — deve responder
-`"modo": "oauth"`. Se as credenciais estiverem erradas, o sistema registra o
-erro e volta ao modo anônimo em vez de falhar.
 
 ---
 
 ## Coleta contínua
 
 O botão de coleta automática do dashboard depende do navegador: ele só roda
-enquanto a aba estiver aberta na fonte "X". Para acumular dados por dias ou
+enquanto a aba **X / Twitter** estiver aberta. Para acumular dados por dias ou
 semanas — que é o que a análise exige — use o coletor dedicado:
 
 ```bash
 cd backend
 
 # Coleta a cada 20 minutos; Ctrl+C encerra com segurança
-python tools/coletor_continuo.py --intervalo 20
+python tools/coletor_continuo.py --intervalo 20 --sem-reddit
 
 # Uma rodada só (para o Agendador de Tarefas do Windows ou cron)
-python tools/coletor_continuo.py --once
+python tools/coletor_continuo.py --once --sem-reddit
 
 # Escolhendo moedas e perfis
-python tools/coletor_continuo.py --moedas BTC ETH --perfis whale_alert CoinDesk
+python tools/coletor_continuo.py --moedas BTC ETH --perfis whale_alert CoinDesk --sem-reddit
 
 # Conferir se os perfis de perfis_x.txt existem e são públicos
 python tools/verificar_perfis.py
@@ -319,7 +284,7 @@ seguras: posts já salvos são descartados antes de chegar ao modelo.
 
 ```bash
 cd backend
-python -m pytest tests/ -q      # 305 testes
+python -m pytest tests/ -q      # 323 testes
 ```
 
 ```bash
@@ -389,10 +354,26 @@ evidência se tiver p < 0,05 **e** superar a baseline "sempre sobe".
 
 ### Simulador
 
-O backtest cobra **0,1% por operação** (taxa spot da Binance), na compra e na
-venda, e o buy & hold paga a mesma taxa de entrada. Sem custo, uma estratégia
-que opera muito parece melhor do que é. A taxa é ajustável pelo campo
-`taxa_operacao_pct` de `/simulacao/investimento`.
+Três estratégias: **Flat** (compra em quedas de preço), **FOMO** (quedas com
+sentimento positivo na hora) e **Padrões gráficos** (entra no rompimento do
+padrão escolhido, sai no alvo, no stop ou no prazo do padrão; padrões de baixa
+viram venda a descoberto simulada). Na aba, o modo Padrões indica só qual teve o
+melhor desempenho no backtest do tempo gráfico; o detalhe fica no Analisador.
+
+A execução segue o emulador de ordens do Strategy Tester do TradingView:
+
+- o sinal é lido no fechamento e a ordem executa na **abertura do candle
+  seguinte** (comprar no mesmo fechamento usaria informação do futuro);
+- meta e stop são conferidos pela **máxima e mínima** de cada candle; gap além
+  do nível executa na abertura; meta e stop no mesmo candle contam como stop;
+- **0,1% de taxa** (spot da Binance) e **0,05% de slippage** por operação, na
+  entrada e na saída, ajustáveis na tela. O buy & hold paga a mesma taxa.
+
+O relatório traz as métricas do Strategy Tester: lucro líquido, queda máxima
+(da estratégia e do buy & hold), fator de lucro, taxa de acerto, média por
+operação, maior ganho e perda, duração média, tempo posicionado e Sharpe, além
+dos gráficos de patrimônio, preço com entradas e saídas, e quedas, e da lista
+de operações com resultado acumulado.
 
 ### Padrões gráficos (price action)
 
@@ -442,13 +423,11 @@ resultado.
 | GET  | `/correlacao` | Métricas de correlação sentimento × preço |
 | POST | `/gerar-relatorio` | PDF dos posts de uma hora |
 | POST | `/gerar-relatorio-correlacao` | PDF da análise de correlação |
-| POST | `/coletar/reddit` | Coleta e classifica posts do Reddit |
 | POST | `/coletar/x` | Coleta e classifica tweets |
 | POST | `/feed/x` | Timeline do X com sentimento (não grava) |
 | POST | `/analisar-texto` | Classifica um texto avulso |
 | GET  | `/risco-moedas` | Volatilidade e queda máxima de cada moeda em 365 dias (aberta) |
-| GET  | `/comparacao-fontes` | Compara X e Reddit (concordância, correlação, série horária) |
-| POST | `/simulacao/investimento` | Backtest de compra e venda (FOMO ou Flat; fonte X ou Reddit) |
+| POST | `/simulacao/investimento` | Backtest de compra e venda (Flat, FOMO com sentimento do X ou padrões gráficos) |
 | POST | `/auth/cadastro` | Cria a conta e entra |
 | POST | `/auth/login` | Entra (limite de tentativas por e-mail e IP) |
 | POST | `/auth/logout` | Encerra a sessão |
@@ -459,7 +438,7 @@ resultado.
 
 **Quem precisa de conta.** Só a Visão geral é aberta (`/`, `/status/*`,
 `/sentimento`, `/risco-moedas`, `/historico-*`, `/correlacao`). Todo o resto (simulação,
-coleta, feed, comparação, relatórios em PDF, análise de texto, sincronização)
+coleta, feed, relatórios em PDF, análise de texto, sincronização)
 exige o cabeçalho `Authorization: Bearer <token>` e responde 401 sem ele.
 
 ---
@@ -603,8 +582,7 @@ substitui a base rotulada de posts reais):
 Nos 581 posts reais, o modelo anterior marcava 73% como negativos; o atual
 marca 14% (63% neutros), o que combina com uma timeline de posts factuais.
 Após reclassificar o banco (`tools/reclassificar.py --aplicar`), a taxa de
-acerto sobre o preço passou a ser 54,5% (X, 11 horas comparáveis) e 50,0%
-(Reddit, 6 horas). Esses números **não indicam poder preditivo**: o novo modelo
+acerto sobre o preço passou a ser 54,5% (X, 11 horas comparáveis). Esses números **não indicam poder preditivo**: o novo modelo
 produz mais horas neutras, que não contam como previsão, e a amostra
 comparável encolheu. O limite continua sendo a quantidade de dados.
 
@@ -633,19 +611,13 @@ duas pessoas, cada uma na sua coluna, e rode
    expiram e de endpoints não oficiais que podem mudar sem aviso. As três
    estratégias em cascata mitigam, mas não eliminam o problema.
 
-4. **Coleta do Reddit exige credenciais.** O acesso anônimo é limitado por IP
-   e hoje retorna HTTP 403 na maioria das tentativas — na prática, o modo
-   anônimo não sustenta coleta contínua. Registre um app e preencha
-   `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` (veja
-   [Credenciais do Reddit](#credenciais-do-reddit)).
-
-5. **Correlação não é causalidade.** A taxa de acerto mede coincidência de
+4. **Correlação não é causalidade.** A taxa de acerto mede coincidência de
    direção, não relação causal. Preço de cripto responde a muitos fatores fora
    do escopo deste trabalho.
 
-6. **Janela de preço.** Os preços são buscados por trechos contíguos de horas
+5. **Janela de preço.** Os preços são buscados por trechos contíguos de horas
    com posts (até 40 trechos por análise). Posts antigos isolados além desse
    teto ficam sem preço e são omitidos da tabela do PDF.
 
-7. **Não é recomendação de investimento.** É um projeto acadêmico; o perfil e
+6. **Não é recomendação de investimento.** É um projeto acadêmico; o perfil e
    o simulador têm fim educacional.

@@ -14,14 +14,13 @@ import {
 } from "recharts";
 import { api, API_URL, ApiError } from "../api";
 import {
-  FONTES_SOCIAIS,
   LEITURA_DO_PERFIL,
   foiCancelada,
   nomeDaMoeda,
   textoDoAviso,
 } from "../constants";
 import { moeda as fmtMoeda, numero, percentual, rotuloHora } from "../format";
-import { Dica, Pill, Seg, Spinner, Topline, Vazio } from "../components/ui";
+import { Dica, Pill, Spinner, Topline, Vazio } from "../components/ui";
 
 const MARGEM = { top: 8, right: 12, left: 0, bottom: 0 };
 const EIXO_Y = 74;
@@ -34,9 +33,7 @@ const leituraDoScore = (s) =>
       : { tom: "", texto: "Neutro" };
 
 export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, abrirAcesso, riscos }) {
-  const [fonte, setFonte] = useState(
-    () => localStorage.getItem("senty_fonte_geral") || "X",
-  );
+  const fonte = "X";
   const [pontos, soPreco, setPontos] = useHistorico();
   const [preco, setPreco] = useState(null);
   const [resumo, setResumo] = useState(null);
@@ -47,9 +44,6 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
   const [gerandoPdf, setGerandoPdf] = useState(false);
   const abortar = useRef(null);
 
-  useEffect(() => {
-    localStorage.setItem("senty_fonte_geral", fonte);
-  }, [fonte]);
 
   const carregar = useCallback(async () => {
     abortar.current?.abort();
@@ -140,12 +134,6 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
   return (
     <section className="screen" aria-label="Visão geral">
       <Topline titulo="Visão geral" moeda={moeda} setMoeda={setMoeda}>
-        <Seg
-          label="Fonte"
-          value={fonte}
-          options={FONTES_SOCIAIS}
-          onChange={setFonte}
-        />
         <label className="hint" htmlFor="g-de">De</label>
         <input id="g-de" type="date" className="sel" value={dataInicio}
           max={dataFim || undefined} onChange={(e) => setDataInicio(e.target.value)} />
@@ -183,7 +171,7 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
               texto={
                 carregando
                   ? undefined
-                  : "Colete posts na aba X e Reddit ou sincronize os preços em Configurações."
+                  : "Colete posts na aba X / Twitter ou sincronize os preços em Configurações."
               }
             />
           ) : (
@@ -298,7 +286,7 @@ export default function Geral({ moeda, setMoeda, notify, autoRefresh, usuario, a
             <div className="card stack convite">
               <h2>Quer ir além da Visão geral?</h2>
               <p className="hint">
-                Com uma conta gratuita você simula investimentos, compara X e Reddit, gera
+                Com uma conta gratuita você simula investimentos, acompanha o sentimento do X, gera
                 relatórios em PDF e recebe leituras adaptadas ao seu perfil de investimento.
               </p>
               <div className="btns">

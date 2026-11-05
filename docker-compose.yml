@@ -10,7 +10,7 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
-    # Credenciais (Reddit, X, ADMIN_TOKEN...). Os caminhos de banco do .env
+    # Credenciais (X, ADMIN_TOKEN...). Os caminhos de banco do .env
     # são ignorados: o Dockerfile aponta tudo para o volume /data.
     env_file:
       - path: ./backend/.env
@@ -25,12 +25,12 @@ services:
       - modelos:/models
     restart: unless-stopped
 
-  # Coleta contínua (X + Reddit a cada 20 min), independente do navegador.
+  # Coleta contínua do X a cada 20 min, independente do navegador.
   # Opcional — só sobe quando pedido:  docker compose --profile coleta up -d
   coletor:
     build: ./backend
     profiles: ["coleta"]
-    command: ["python", "tools/coletor_continuo.py", "--intervalo", "20"]
+    command: ["python", "tools/coletor_continuo.py", "--intervalo", "20", "--sem-reddit"]
     env_file:
       - path: ./backend/.env
         required: false

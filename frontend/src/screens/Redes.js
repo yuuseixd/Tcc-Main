@@ -4,8 +4,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -15,7 +13,6 @@ import {
 import { api, API_URL, ApiError } from "../api";
 import {
   INTERVALOS_COLETA,
-  SUBREDDITS_DEFAULT,
   estadoColetaX,
   foiCancelada,
   listaDePerfis,
@@ -25,7 +22,6 @@ import {
   Dica,
   Pill,
   Recolhivel,
-  Seg,
   Spinner,
   Topline,
   Vazio,
@@ -33,59 +29,39 @@ import {
   rotuloSentimento,
 } from "../components/ui";
 
-const VISOES = [
-  { valor: "X", rotulo: "X" },
-  { valor: "Reddit", rotulo: "Reddit" },
-  { valor: "Comparar", rotulo: "Comparar" },
-];
 const MARGEM = { top: 8, right: 8, left: 0, bottom: 0 };
+const FONTE = "X";
 
 export default function Redes({
   moeda, setMoeda, notify, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin,
-  redditOauth, autoColeta, setAutoColeta, atualizarSaude,
+  autoColeta, setAutoColeta, atualizarSaude,
 }) {
-  const [visao, setVisao] = useState(
-    () => localStorage.getItem("senty_visao_redes") || "X",
-  );
-  useEffect(() => {
-    localStorage.setItem("senty_visao_redes", visao);
-  }, [visao]);
-
   return (
-    <section className="screen" aria-label="X e Reddit">
-      <Topline titulo="X e Reddit" moeda={moeda} setMoeda={setMoeda}>
-        <Seg label="Visão" value={visao} options={VISOES} onChange={setVisao} />
-      </Topline>
-      {visao === "Comparar" ? (
-        <Comparar moeda={moeda} notify={notify} />
-      ) : (
-        <FonteView
-          key={visao}
-          fonte={visao}
-          moeda={moeda}
-          notify={notify}
-          perfisX={perfisX}
-          setPerfisX={setPerfisX}
-          twitterOk={twitterOk}
-          xColeta={xColeta}
-          atualizarSaude={atualizarSaude}
-          abrirLogin={abrirLogin}
-          redditOauth={redditOauth}
-          autoColeta={autoColeta}
-          setAutoColeta={setAutoColeta}
-        />
-      )}
+    <section className="screen" aria-label="X / Twitter">
+      <Topline titulo="X / Twitter" moeda={moeda} setMoeda={setMoeda} />
+      <FonteView
+        fonte={FONTE}
+        moeda={moeda}
+        notify={notify}
+        perfisX={perfisX}
+        setPerfisX={setPerfisX}
+        twitterOk={twitterOk}
+        xColeta={xColeta}
+        atualizarSaude={atualizarSaude}
+        abrirLogin={abrirLogin}
+        autoColeta={autoColeta}
+        setAutoColeta={setAutoColeta}
+      />
     </section>
   );
 }
 
-/* ── X ou Reddit: coleta, correlação e feed ─────────────────────────── */
+/* ── X: coleta, correlação e feed ───────────────────────────────────── */
 
 function FonteView({
   fonte, moeda, notify, perfisX, setPerfisX, twitterOk, xColeta, abrirLogin,
-  redditOauth, autoColeta, setAutoColeta, atualizarSaude,
+  autoColeta, setAutoColeta, atualizarSaude,
 }) {
-  const ehX = fonte === "X";
   const [corr, setCorr] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [coletando, setColetando] = useState(false);
@@ -122,20 +98,13 @@ function FonteView({
   const coletar = useCallback(
     async (silencioso = false) => {
       const perfis = listaDePerfis(perfisX);
-      if (ehX && perfis.length === 0) {
+      if (perfis.length === 0) {
         notify.erro("Informe ao menos um perfil do X.");
         return;
       }
       if (!silencioso) setColetando(true);
       try {
-        const dados = ehX
-          ? await api.coletarX({ moeda, perfis, limite_por_perfil: 100 })
-          : await api.coletarReddit({
-              moeda,
-              subreddits: SUBREDDITS_DEFAULT[moeda] || ["CryptoCurrency"],
-              limite_por_sub: 25,
-              ordenacao: "new",
-            });
+        const dados = await api.coletarX({ moeda, perfis, limite_por_perfil: 100 });
         notify.ok(`${silencioso ? "[Auto] " : ""}${dados.mensagem}`);
         notify.aviso(dados.avisos?.length ? dados.avisos.join(" · ") : null);
         carregarCorr();
@@ -153,7 +122,7 @@ function FonteView({
         if (!silencioso) setColetando(false);
       }
     },
-    [ehX, moeda, perfisX, notify, carregarCorr, atualizarSaude],
+    [moeda, perfisX, notify, carregarCorr, atualizarSaude],
   );
 
   useEffect(() => {
@@ -220,8 +189,7 @@ function FonteView({
   return (
     <>
       <div className="card stack">
-        {ehX ? (
-          <>
+        <>
             <div className="row-between">
               <h2>Coleta do X</h2>
               <Pill tom={statusX.tom}>{statusX.rotulo}</Pill>
@@ -266,40 +234,6 @@ function FonteView({
               )}
             </div>
           </>
-        ) : (
-          <>
-            <div className="row-between">
-              <h2>Coleta do Reddit</h2>
-              <Pill tom={redditOauth ? "pos" : "warn"}>
-                {redditOauth ? "Chaves configuradas" : "Sem chaves do Reddit"}
-              </Pill>
-            </div>
-            <p className="hint">
-              {redditOauth
-                ? "A coleta usa o acesso oficial do Reddit."
-                : "Sem as chaves de acesso, o Reddit costuma recusar a coleta (erro 403). Enquanto isso, as análises usam os posts já salvos."}
-            </p>
-            <div className="chips">
-              {(SUBREDDITS_DEFAULT[moeda] || ["CryptoCurrency"]).map((s) => (
-                <Pill key={s} tom="acc">r/{s}</Pill>
-              ))}
-            </div>
-            <div className="field" style={{ maxWidth: 260 }}>
-              <label htmlFor="r-auto">Coleta automática</label>
-              <select id="r-auto" value={autoColeta}
-                onChange={(e) => setAutoColeta(parseInt(e.target.value, 10))}>
-                {INTERVALOS_COLETA.map((i) => (
-                  <option key={i.valor} value={i.valor}>{i.rotulo}</option>
-                ))}
-              </select>
-            </div>
-            <div className="btns">
-              <button className="btn primary" type="button" onClick={() => coletar(false)} disabled={coletando}>
-                {coletando ? "Coletando..." : "Coletar Reddit agora"}
-              </button>
-            </div>
-          </>
-        )}
       </div>
 
       <div className="card stack">
@@ -473,7 +407,7 @@ function FonteView({
         )}
       </div>
 
-      {ehX && feed.length > 0 && (
+      {feed.length > 0 && (
         <div className="card">
           <div className="row-between" style={{ marginBottom: 6 }}>
             <h2>Timeline do X</h2>
@@ -506,136 +440,6 @@ function FonteView({
           ))}
         </div>
       )}
-    </>
-  );
-}
-
-/* ── Comparar X e Reddit ────────────────────────────────────────────── */
-
-function Comparar({ moeda, notify }) {
-  const [dados, setDados] = useState(null);
-  const [carregando, setCarregando] = useState(true);
-
-  useEffect(() => {
-    const controle = new AbortController();
-    setCarregando(true);
-    api
-      .comparacaoFontes(moeda, controle.signal)
-      .then(setDados)
-      .catch((e) => {
-        if (foiCancelada(e)) return;
-        setDados(null);
-        notify.erro(`Falha ao comparar as redes: ${e.message}`);
-      })
-      .finally(() => {
-        if (!controle.signal.aborted) setCarregando(false);
-      });
-    return () => controle.abort();
-  }, [moeda, notify]);
-
-  if (!dados) {
-    return (
-      <div className="card">
-        <Vazio titulo={carregando ? "Carregando..." : "Sem dados para comparar"} />
-      </div>
-    );
-  }
-
-  const { fontes, comparacao: c, serie } = dados;
-  const X = fontes.X, R = fontes.Reddit;
-  const parcela = (f) => {
-    const total = f.posts.positivos + f.posts.negativos + f.posts.neutros;
-    return total ? (f.posts.positivos / total) * 100 : 0;
-  };
-
-  const Metrica = ({ titulo, sub, a, b, formatar, maximo }) => (
-    <div className="card metric">
-      <h3>{titulo}<small>{sub}</small></h3>
-      {[["X", a, ""], ["Reddit", b, "reddit"]].map(([nome, v, cls]) => (
-        <div className="row" key={nome}>
-          <b>{nome}</b>
-          <div className={`bar ${cls}`}>
-            <i style={{ width: `${Math.max(2, Math.min(100, ((v ?? 0) / maximo) * 100))}%` }} />
-          </div>
-          <span className="val">{v == null ? "—" : formatar(v)}</span>
-        </div>
-      ))}
-    </div>
-  );
-
-  // O X tem posts de anos atrás; mostrar tudo achata o gráfico. A janela começa
-  // na primeira hora com posts do Reddit (ou nas últimas 100 horas, se não houver).
-  const primeiraDoReddit = serie.findIndex((p) => p.Reddit != null);
-  const visiveis = primeiraDoReddit >= 0 ? serie.slice(primeiraDoReddit) : serie.slice(-100);
-  const rotuloData = (ts) => {
-    const d = new Date(ts);
-    return Number.isNaN(d.getTime())
-      ? ""
-      : new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC", day: "2-digit", month: "2-digit", year: "2-digit" }).format(d);
-  };
-
-  const retornoMax = Math.max(
-    0.5,
-    Math.abs(X.resumo.retorno_medio_apos_positivo ?? 0),
-    Math.abs(R.resumo.retorno_medio_apos_positivo ?? 0),
-  );
-
-  return (
-    <>
-      {c.aviso && <div className="callout">{c.aviso}</div>}
-      <div className="stat-row">
-        <div className="stat"><span className="l">Horas com posts nas duas redes</span><span className="v">{c.horas_em_comum} de 10</span></div>
-        <div className="stat"><span className="l">Concordância entre redes</span><span className="v">{c.concordancia_pct != null ? `${numero(c.concordancia_pct, 0)}%` : "sem dados"}</span></div>
-        <div className="stat"><span className="l">Correlação entre redes</span><span className="v">{c.correlacao_sentimento != null ? numero(c.correlacao_sentimento, 2) : "sem dados"}</span></div>
-      </div>
-      <div className="two">
-        <Metrica titulo="Acerto da direção do preço" sub="% das horas comparáveis"
-          a={X.resumo.taxa_acerto_pct} b={R.resumo.taxa_acerto_pct}
-          formatar={(v) => `${numero(v, 1)}%`} maximo={100} />
-        <Metrica titulo="Retorno após hora positiva" sub="% em 1 hora"
-          a={X.resumo.retorno_medio_apos_positivo} b={R.resumo.retorno_medio_apos_positivo}
-          formatar={(v) => `${numero(v, 2)}%`} maximo={retornoMax} />
-        <Metrica titulo="Parcela de posts positivos" sub="do total de cada rede"
-          a={parcela(X)} b={parcela(R)} formatar={(v) => `${numero(v, 1)}%`} maximo={100} />
-      </div>
-
-      {visiveis.length > 0 && (
-        <div className="card stack">
-          <div>
-            <h2>Sentimento hora a hora</h2>
-            <p className="hint">
-              Cada ponto é o Sentiment Score de uma hora em que a rede teve posts
-              {primeiraDoReddit >= 0
-                ? `, a partir de ${rotuloData(visiveis[0].timestamp)} (primeiros posts do Reddit).`
-                : " (últimas 100 horas com posts)."}
-            </p>
-          </div>
-          <div className="chart" role="img" aria-label="Sentiment Score do X e do Reddit por hora">
-            <ResponsiveContainer minWidth={0} minHeight={180}>
-              <LineChart data={visiveis} margin={MARGEM}>
-                <CartesianGrid vertical={false} />
-                <XAxis dataKey="timestamp" tickLine={false} minTickGap={50} tickFormatter={rotuloData} />
-                <YAxis width={46} domain={[-1, 1]} tickLine={false} axisLine={false}
-                  tickFormatter={(v) => numero(v, 1)} />
-                <ReferenceLine y={0} stroke="var(--line)" />
-                <Tooltip content={<Dica formatar={(v) => numero(v, 2)} />} />
-                <Line dataKey="X" name="X" stroke="var(--accent)" strokeWidth={0}
-                  dot={{ r: 3.5, fill: "var(--accent)", stroke: "none" }} isAnimationActive={false} />
-                <Line dataKey="Reddit" name="Reddit" stroke="var(--series)" strokeWidth={0}
-                  dot={{ r: 3.5, fill: "var(--series)", stroke: "none" }} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="legend">
-            <span style={{ "--c": "var(--accent)" }}>X</span>
-            <span style={{ "--c": "var(--series)" }}>Reddit</span>
-          </div>
-        </div>
-      )}
-      <p className="hint">
-        O X tem {numero(X.resumo.total_posts)} posts salvos e o Reddit tem {numero(R.resumo.total_posts)}.
-        Com mais coleta do Reddit, esta tela fica mais confiável.
-      </p>
     </>
   );
 }

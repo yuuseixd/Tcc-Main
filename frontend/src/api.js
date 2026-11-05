@@ -140,14 +140,10 @@ export const api = {
       { signal },
     ),
 
-  comparacaoFontes: (moeda, signal) =>
-    request(`/comparacao-fontes${qs({ moeda })}`, { signal }),
 
   syncBinance: (moeda, dias = 7) =>
     request(`/sync-binance${qs({ moeda, dias })}`, { method: "POST" }),
 
-  coletarReddit: (corpo) =>
-    request("/coletar/reddit", { method: "POST", body: corpo }),
 
   coletarX: (corpo) => request("/coletar/x", { method: "POST", body: corpo }),
 

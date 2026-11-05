@@ -41,7 +41,7 @@ export default function Acesso({ motivo, modoInicial = "entrar", entrar, cadastr
           </h1>
           <p className="hint">
             {motivo ||
-              "A Visão geral é aberta a todos. Para simular, comparar as redes e gerar relatórios, é preciso ter uma conta."}
+              "A Visão geral é aberta a todos. Para simular, coletar do X e gerar relatórios, é preciso ter uma conta."}
           </p>
         </div>
 

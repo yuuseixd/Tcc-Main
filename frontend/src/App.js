@@ -14,7 +14,7 @@ import { estadoColetaX } from "./constants";
 /** `restrita`: exige conta. Só a Visão geral é aberta a quem não entrou. */
 const TELAS = [
   { id: "geral", rotulo: "Visão geral", restrita: false, icone: "M4 13h6V4H4zM14 20h6V4h-6zM4 20h6v-4H4z" },
-  { id: "redes", rotulo: "X e Reddit", restrita: true, icone: "M7 7h11M7 7l3-3M7 7l3 3M17 17H6M17 17l-3-3M17 17l-3 3" },
+  { id: "redes", rotulo: "X / Twitter", restrita: true, icone: "M7 7h11M7 7l3-3M7 7l3 3M17 17H6M17 17l-3-3M17 17l-3 3" },
   { id: "sim", rotulo: "Simulador", restrita: true, icone: "M3 17l6-6 4 4 8-9M15 6h6v6" },
   { id: "analisador", rotulo: "Analisador", restrita: true, icone: "M4 19V9M10 19V5M16 19v-8M22 19H2" },
   { id: "perfil", rotulo: "Meu perfil", restrita: true, icone: "M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0" },
@@ -67,7 +67,7 @@ function App() {
   const [verificando, setVerificando] = useState(temToken());
   const [modoAcesso, setModoAcesso] = useState("entrar");
 
-  const [saude, setSaude] = useState({ online: null, twitter: false, reddit: false });
+  const [saude, setSaude] = useState({ online: null, twitter: false });
   const [riscos, setRiscos] = useState(null);
   const [avisos, setAvisos] = useState({ erro: null, ok: null, aviso: null });
   const [modalLogin, setModalLogin] = useState(false);
@@ -121,7 +121,6 @@ function App() {
         online: d.status === "ok",
         twitter: Boolean(d.twitter_cookies),
         xColeta: d.twitter_coleta || null,
-        reddit: Boolean(d.reddit_oauth),
       });
     } catch {
       setSaude((s) => ({ ...s, online: false }));
@@ -238,10 +237,6 @@ function App() {
             <i className={`dot ${{ pos: "", neg: "err" }[statusX.tom] ?? "warn"}`} />
             X: {statusX.curto}
           </span>
-          <span>
-            <i className={`dot ${saude.reddit ? "" : "warn"}`} />
-            Reddit: {saude.reddit ? "chaves configuradas" : "configurar chaves"}
-          </span>
           <button className="link" type="button" onClick={() => setTema(PROXIMO_TEMA[tema])}
             title="Alternar o tema">
             Tema: {ROTULO_TEMA[tema]}
@@ -272,7 +267,7 @@ function App() {
         {!bloqueada && tela === "redes" && (
           <Redes {...comuns} perfisX={perfisX} setPerfisX={setPerfisX}
             twitterOk={saude.twitter} xColeta={saude.xColeta} atualizarSaude={checarSaude}
-            abrirLogin={abrirLogin} redditOauth={saude.reddit}
+            abrirLogin={abrirLogin}
             autoColeta={autoColeta} setAutoColeta={setAutoColeta} />
         )}
         {!bloqueada && tela === "sim" && (
@@ -289,7 +284,7 @@ function App() {
             perfisX={perfisX} setPerfisX={setPerfisX} usuario={usuario}
             irParaPerfil={() => setTela("perfil")} sair={sair}
             twitterOk={saude.twitter} xColeta={saude.xColeta}
-            abrirLogin={abrirLogin} redditOauth={saude.reddit} />
+            abrirLogin={abrirLogin} />
         )}
       </main>
 

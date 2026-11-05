@@ -44,7 +44,7 @@ const QUESTIONARIO = {
 function instalarApi(respostas = {}) {
   const chamadas = [];
   const tabela = {
-    "/": { status: "ok", twitter_cookies: true, reddit_oauth: false },
+    "/": { status: "ok", twitter_cookies: true },
     "/perfil/questionario": QUESTIONARIO,
     "/risco-moedas": RISCOS,
     "/auth/logout": { sucesso: true },
@@ -86,7 +86,7 @@ describe("acesso", () => {
     expect(screen.getByText("Quer ir além da Visão geral?")).toBeInTheDocument();
   });
 
-  test.each(["X e Reddit", "Simulador", "Analisador", "Meu perfil", "Configurações"])(
+  test.each(["X / Twitter", "Simulador", "Analisador", "Meu perfil", "Configurações"])(
     "%s pede conta a quem não entrou",
     async (nome) => {
       instalarApi();
