@@ -17,7 +17,7 @@ router = APIRouter()
 async def simular_investimento(
     body: SimulacaoInvestimentoRequest, db: Session = Depends(get_db)
 ):
-    """Backtest de compra/venda simulada — modo FOMO (sentimento) ou Flat (só preço).
+    """Backtest de compra/venda simulada — FOMO (sentimento), Flat (só preço) ou Padrões.
 
     FOMO roda sobre ``social_posts`` já salvos (não dispara coleta ao vivo);
     Flat ignora posts e perfis. Ver ``services/simulacao.py`` para a regra
@@ -32,16 +32,25 @@ async def simular_investimento(
             status_code=400,
             detail="Período inválido: informe data_inicio anterior a data_fim.",
         )
-    if (fim - inicio).days > svc_simulacao.MAX_DIAS_SIMULACAO:
+    max_dias = (svc_simulacao.MAX_DIAS_PADROES if body.modo == "padroes"
+                else svc_simulacao.MAX_DIAS_SIMULACAO)
+    if (fim - inicio).days > max_dias:
         raise HTTPException(
             status_code=400,
-            detail=f"Período máximo da simulação é de "
-            f"{svc_simulacao.MAX_DIAS_SIMULACAO} dias.",
+            detail=f"Período máximo da simulação é de {max_dias} dias.",
         )
     if body.valor_por_compra > body.capital_inicial:
         raise HTTPException(
             status_code=400,
             detail="Valor por compra não pode ser maior que o capital inicial.",
+        )
+
+    if body.modo == "padroes":
+        return await run_in_threadpool(
+            svc_simulacao.simular_padroes,
+            moeda_u, body.padrao, body.intervalo, inicio, fim,
+            body.capital_inicial, body.valor_por_compra,
+            body.taxa_operacao_pct, body.slippage_pct,
         )
 
     return await run_in_threadpool(
@@ -50,5 +59,5 @@ async def simular_investimento(
         body.capital_inicial, body.valor_por_compra,
         body.percentual_lucro_venda, body.percentual_queda_compra,
         body.percentual_perda_aceita, body.modo, body.fonte,
-        body.taxa_operacao_pct,
+        body.taxa_operacao_pct, body.slippage_pct,
     )

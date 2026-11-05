@@ -62,7 +62,7 @@ class SimulacaoInvestimentoRequest(BaseModel):
     """
 
     moeda: str = Field("BTC", max_length=20)
-    modo: str = Field("fomo", pattern="^(fomo|flat)$")
+    modo: str = Field("fomo", pattern="^(fomo|flat|padroes)$")
     fonte: str = Field("X", pattern="^(?i:x|reddit)$")
     # X: perfis (@usuario). Reddit: subreddits (r/nome); vazio = todos.
     perfis: list[str] | None = Field(None, min_length=1, max_length=50)
@@ -80,6 +80,12 @@ class SimulacaoInvestimentoRequest(BaseModel):
     # Custo por operação (compra ou venda), em %. 0,1% é a taxa spot padrão da
     # Binance; sem ele o backtest superestima o resultado de quem opera muito.
     taxa_operacao_pct: float = Field(0.1, ge=0, le=5)
+    # Diferença entre o preço de referência e o executado (ordem a mercado
+    # anda no livro). 0,05% é um valor típico em pares líquidos.
+    slippage_pct: float = Field(0.05, ge=0, le=5)
+    # Modo "padroes": qual padrão operar e em que tempo gráfico.
+    padrao: str | None = Field(None, max_length=40)
+    intervalo: str = Field("4h", pattern="^(4h|12h|1d)$")
 
     @field_validator("moeda")
     @classmethod
@@ -98,6 +104,10 @@ class SimulacaoInvestimentoRequest(BaseModel):
                 "O modo FOMO com o X exige ao menos um perfil (o modo Flat "
                 "e a fonte Reddit não)."
             )
+        if self.modo == "padroes":
+            from services.padroes import TIPOS
+            if self.padrao not in TIPOS:
+                raise ValueError("Escolha um padrão gráfico válido para o modo Padrões.")
         return self
 
 

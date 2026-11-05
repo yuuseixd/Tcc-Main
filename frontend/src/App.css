@@ -145,7 +145,6 @@ select.sel { appearance: none; background: var(--surface); border: 1px solid var
 .metric h3 small { color: var(--muted); font-weight: 500; margin-left: 6px; }
 .bar { height: 10px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
 .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
-.bar.reddit > i { background: var(--neu); }
 
 .tbl-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -237,3 +236,9 @@ label.opcao span { color: var(--fg); font-size: 14px; }
   .work { padding: 18px 16px 40px; }
 }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } .sw button::after { transition: none; } }
+
+/* Simulador: grade compacta de estatísticas das operações */
+.estats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px 16px; }
+.estat { display: flex; flex-direction: column; gap: 2px; }
+.estat .l { color: var(--muted); font-size: 12px; font-weight: 600; }
+.estat .v { font-family: var(--font-num); font-weight: 700; font-variant-numeric: tabular-nums; }

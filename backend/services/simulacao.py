@@ -32,9 +32,25 @@ Para cada hora, em ordem cronológica:
      compra, o que exige uma nova perna de queda antes da próxima compra
      (sem isso, compraria em toda hora abaixo do pico antigo).
 
-Cada compra e cada venda paga ``taxa_operacao_pct`` sobre o valor operado
-(padrão 0,1%, a taxa spot da Binance). O buy & hold paga a mesma taxa na
-entrada, para a comparação ser justa.
+**Padrões** — entra no rompimento de um padrão gráfico escolhido (ver
+``services/padroes.py``), com o alvo e o stop do próprio padrão; padrões de
+baixa viram venda a descoberto simulada. Sai no alvo, no stop ou no fim do
+horizonte do padrão.
+
+Execução (no mesmo espírito do emulador de ordens do TradingView)
+------------------------------------------------------------------
+* O sinal é lido no **fechamento** de um candle e a ordem é executada na
+  **abertura do candle seguinte** — comprar no mesmo fechamento que gerou o
+  sinal usaria uma informação que só existe depois do candle fechar.
+* Meta e stop são conferidos **dentro do candle**, pela máxima e pela mínima:
+  um pavio que encosta no stop vende no stop, mesmo que o candle feche acima.
+  Se o candle já abre além do nível (gap), executa na abertura. Se meta e stop
+  caem no mesmo candle, conta o stop (não dá para saber a ordem; leitura
+  conservadora, a mesma da análise de padrões).
+* Cada compra e cada venda paga ``taxa_operacao_pct`` sobre o valor operado
+  (padrão 0,1%, a taxa spot da Binance) e sofre ``slippage_pct`` no preço
+  (executa um pouco pior que o preço de referência). O buy & hold paga a
+  mesma taxa na entrada, para a comparação ser justa.
 
 Ao final, posições ainda abertas são marcadas a mercado (preço da última
 hora) como lucro não realizado, separado do lucro realizado das vendas.
@@ -44,7 +60,7 @@ estatística do resto do projeto (ver ``services/correlacao.py``).
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -52,6 +68,7 @@ from sqlalchemy.orm import Session
 from models import SocialPost
 from services import correlacao as svc_correlacao
 from services import mercado as svc_mercado
+from services import padroes as svc_padroes
 from services.sentimento import NULO, POSITIVO
 from utils.tempo import para_iso_utc
 
@@ -118,6 +135,7 @@ def simular_investimento(
     modo: str = "fomo",
     fonte: str = "X",
     taxa_operacao_pct: float = TAXA_OPERACAO_PADRAO_PCT,
+    slippage_pct: float = 0.0,
 ) -> dict:
     """Roda o backtest e devolve trades, série de patrimônio e resumo.
 
@@ -139,6 +157,7 @@ def simular_investimento(
         "percentual_queda_compra": percentual_queda_compra,
         "percentual_perda_aceita": percentual_perda_aceita,
         "taxa_operacao_pct": taxa_operacao_pct,
+        "slippage_pct": slippage_pct,
     }
 
     agrupado: dict = {}
@@ -199,10 +218,231 @@ def simular_investimento(
     resultado = _rodar_backtest(
         moeda_u, perfis, candles, agrupado, capital_inicial,
         valor_por_compra, percentual_lucro_venda, percentual_queda_compra,
-        percentual_perda_aceita, modo, taxa_operacao_pct,
+        percentual_perda_aceita, modo, taxa_operacao_pct, slippage_pct,
     )
     resultado["parametros"]["fonte"] = fonte
     return resultado
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Carteira: posições, execução e métricas (comum aos três modos)
+# ═══════════════════════════════════════════════════════════════════════════
+
+COMPRADO, VENDIDO = 1, -1
+
+
+def _saida(candle, s: int, alvo: float, stop: float) -> tuple[str, float] | None:
+    """Se a posição de lado ``s`` sai neste candle: (motivo, preço de referência).
+
+    Com máxima e mínima, confere dentro do candle; sem elas (candles salvos
+    no banco), só pelo fechamento.
+    """
+    if candle.maxima is None or candle.minima is None:
+        fech = candle.fechamento
+        if s * (fech - stop) <= 0:
+            return "perda", fech
+        if s * (fech - alvo) >= 0:
+            return "lucro", fech
+        return None
+    contra = candle.minima if s == COMPRADO else candle.maxima
+    a_favor = candle.maxima if s == COMPRADO else candle.minima
+    if s * (candle.abertura - stop) <= 0:
+        return "perda", candle.abertura          # abriu além do stop (gap)
+    if s * (contra - stop) <= 0:
+        return "perda", stop
+    if s * (candle.abertura - alvo) >= 0:
+        return "lucro", candle.abertura
+    if s * (a_favor - alvo) >= 0:
+        return "lucro", alvo
+    return None
+
+
+class _Carteira:
+    """Caixa, posições abertas e registro das operações.
+
+    Cada posição reserva ``valor`` do caixa. Comprado: vale ``qtd x preço``.
+    Vendido (a descoberto, simulado): ganha o quanto o preço cai —
+    vale ``qtd x (2 x entrada - preço)``. Sem custo de aluguel da moeda.
+    """
+
+    def __init__(self, capital: float, taxa_pct: float, slippage_pct: float):
+        self.caixa = capital
+        self.taxa = taxa_pct / 100
+        self.slip = slippage_pct / 100
+        self.custos = 0.0
+        self.posicoes: list[dict] = []
+        self.trades: list[dict] = []
+        self._id = 1
+
+    @staticmethod
+    def valor(pos: dict, preco: float) -> float:
+        return pos["qtd"] * (pos["preco_entrada"] + pos["lado"] * (preco - pos["preco_entrada"]))
+
+    def abrir(self, candle, preco_ref: float, valor: float, lado: int = COMPRADO,
+              **extra) -> dict | None:
+        if self.caixa < valor - 1e-9:
+            return None
+        preco = preco_ref * (1 + lado * self.slip)
+        custo = valor * self.taxa
+        self.custos += custo
+        self.caixa -= valor
+        pos = {"id": self._id, "lado": lado, "preco_entrada": preco,
+               "qtd": (valor - custo) / preco, "valor_investido": valor,
+               "inicio": candle.timestamp, "timestamp": para_iso_utc(candle.timestamp),
+               **extra}
+        self.posicoes.append(pos)
+        self.trades.append({
+            "tipo": "compra" if lado == COMPRADO else "venda",
+            "entrada": True,
+            "lado": "comprado" if lado == COMPRADO else "vendido",
+            "posicao_id": self._id, "timestamp": pos["timestamp"],
+            "preco": round(preco, 2), "qtd": pos["qtd"], "valor": round(valor, 2),
+            "taxa": round(custo, 4),
+            **{k: v for k, v in extra.items() if k in ("sentiment_score", "padrao")},
+        })
+        self._id += 1
+        return pos
+
+    def fechar(self, pos: dict, candle, preco_ref: float, motivo: str) -> None:
+        lado = pos["lado"]
+        preco = preco_ref * (1 - lado * self.slip)
+        bruto = self.valor(pos, preco)
+        custo = pos["qtd"] * preco * self.taxa
+        self.custos += custo
+        valor_saida = bruto - custo
+        lucro = valor_saida - pos["valor_investido"]
+        self.caixa += valor_saida
+        self.posicoes.remove(pos)
+        self.trades.append({
+            "tipo": "venda" if lado == COMPRADO else "compra",
+            "entrada": False,
+            "lado": "comprado" if lado == COMPRADO else "vendido",
+            "motivo": motivo, "posicao_id": pos["id"],
+            "timestamp": para_iso_utc(candle.timestamp),
+            "timestamp_entrada": pos["timestamp"],
+            "duracao_h": round((candle.timestamp - pos["inicio"]).total_seconds() / 3600, 1),
+            "preco": round(preco, 2), "qtd": pos["qtd"], "valor": round(valor_saida, 2),
+            "taxa": round(custo, 4), "preco_entrada": round(pos["preco_entrada"], 2),
+            "lucro": round(lucro, 2),
+            "lucro_pct": round(lucro / pos["valor_investido"] * 100, 2),
+            **({"padrao": pos["padrao"]} if "padrao" in pos else {}),
+        })
+
+    def valor_posicoes(self, preco: float) -> float:
+        return sum(self.valor(p, preco) for p in self.posicoes)
+
+    def ponto(self, candle, **extra) -> dict:
+        preco = candle.fechamento
+        abertas = self.valor_posicoes(preco)
+        return {"timestamp": para_iso_utc(candle.timestamp), "preco": round(preco, 2),
+                "caixa": round(self.caixa, 2), "valor_posicoes": round(abertas, 2),
+                "patrimonio": round(self.caixa + abertas, 2),
+                "posicoes_abertas": len(self.posicoes), **extra}
+
+
+def _queda_maxima_pct(valores: list[float]) -> float:
+    """Maior queda do pico ao vale, em % (0 = nunca caiu)."""
+    pico, pior = None, 0.0
+    for v in valores:
+        pico = v if pico is None else max(pico, v)
+        if pico > 0:
+            pior = max(pior, (pico - v) / pico * 100)
+    return round(pior, 2)
+
+
+def _sharpe(valores: list[float], horas_por_candle: float) -> float | None:
+    """Sharpe anualizado (sem taxa livre de risco) dos retornos por candle."""
+    rets = [b / a - 1 for a, b in zip(valores, valores[1:]) if a > 0]
+    if len(rets) < 2:
+        return None
+    media = sum(rets) / len(rets)
+    var = sum((r - media) ** 2 for r in rets) / (len(rets) - 1)
+    if var <= 0:
+        return None
+    return round(media / var ** 0.5 * (24 * 365 / horas_por_candle) ** 0.5, 2)
+
+
+def _resumo(cart: _Carteira, candles: list, serie: list[dict], capital: float,
+            horas_por_candle: float, extra: dict | None = None) -> dict:
+    """Métricas do relatório, no formato do Strategy Tester do TradingView."""
+    preco_inicial, preco_final = candles[0].fechamento, candles[-1].fechamento
+    saidas = [t for t in cart.trades if not t["entrada"]]
+    entradas = [t for t in cart.trades if t["entrada"]]
+    ganhos = [t["lucro"] for t in saidas if t["lucro"] > 0]
+    perdas = [t["lucro"] for t in saidas if t["lucro"] <= 0]
+
+    valor_aberto = cart.valor_posicoes(preco_final)
+    investido_aberto = sum(p["valor_investido"] for p in cart.posicoes)
+    patrimonio_final = cart.caixa + valor_aberto
+    lucro_total = patrimonio_final - capital
+
+    qtd_bh = capital * (1 - cart.taxa) / preco_inicial if preco_inicial else 0.0
+    patrimonio_bh = qtd_bh * preco_final
+    lucro_bh_pct = round((patrimonio_bh - capital) / capital * 100, 2) if capital else 0.0
+    lucro_total_pct = round(lucro_total / capital * 100, 2) if capital else 0.0
+
+    patrimonios = [p["patrimonio"] for p in serie]
+    bh = [capital * (1 - cart.taxa) * c.fechamento / preco_inicial for c in candles]
+    expostos = sum(1 for p in serie if p["posicoes_abertas"] > 0)
+
+    return {
+        "total_horas_simuladas": round(len(candles) * horas_por_candle),
+        "total_compras": sum(1 for t in entradas if t["lado"] == "comprado"),
+        "total_vendas": sum(1 for t in saidas if t["lado"] == "comprado"),
+        "total_entradas": len(entradas),
+        "operacoes_fechadas": len(saidas),
+        "vendas_lucrativas": len(ganhos),
+        "vendas_por_stop_loss": sum(1 for t in saidas if t["motivo"] == "perda"),
+        "saidas_por_prazo": sum(1 for t in saidas if t["motivo"] == "prazo"),
+        "taxa_acerto_pct": round(len(ganhos) / len(saidas) * 100, 1) if saidas else None,
+        "posicoes_abertas_final": len(cart.posicoes),
+        "caixa_final": round(cart.caixa, 2),
+        "valor_posicoes_abertas": round(valor_aberto, 2),
+        "patrimonio_final": round(patrimonio_final, 2),
+        "lucro_realizado": round(sum(t["lucro"] for t in saidas), 2),
+        "lucro_nao_realizado": round(valor_aberto - investido_aberto, 2),
+        "lucro_total": round(lucro_total, 2),
+        "lucro_total_pct": lucro_total_pct,
+        "custos_totais": round(cart.custos, 2),
+        # Métricas de risco e das operações (as do relatório do TradingView).
+        "queda_maxima_pct": _queda_maxima_pct(patrimonios),
+        "fator_lucro": (round(sum(ganhos) / -sum(perdas), 2)
+                        if perdas and sum(perdas) < 0 else None),
+        "media_por_operacao": (round(sum(t["lucro"] for t in saidas) / len(saidas), 2)
+                               if saidas else None),
+        "media_por_operacao_pct": (round(sum(t["lucro_pct"] for t in saidas) / len(saidas), 2)
+                                   if saidas else None),
+        "maior_ganho": round(max(ganhos), 2) if ganhos else None,
+        "maior_perda": round(min(perdas), 2) if perdas else None,
+        "duracao_media_h": (round(sum(t["duracao_h"] for t in saidas) / len(saidas), 1)
+                            if saidas else None),
+        "exposicao_pct": round(expostos / len(serie) * 100, 1) if serie else 0.0,
+        "sharpe": _sharpe(patrimonios, horas_por_candle),
+        "buy_and_hold": {
+            "preco_inicial": round(preco_inicial, 2),
+            "preco_final": round(preco_final, 2),
+            "patrimonio_final": round(patrimonio_bh, 2),
+            "lucro_pct": lucro_bh_pct,
+            "queda_maxima_pct": _queda_maxima_pct(bh),
+        },
+        "superou_buy_and_hold": lucro_total_pct > lucro_bh_pct,
+        **(extra or {}),
+    }
+
+
+def _posicoes_abertas(cart: _Carteira, preco_final: float) -> list[dict]:
+    return [{"id": p["id"], "lado": "comprado" if p["lado"] == COMPRADO else "vendido",
+             "preco_entrada": round(p["preco_entrada"], 2), "qtd": p["qtd"],
+             "valor_investido": round(p["valor_investido"], 2),
+             "valor_atual": round(cart.valor(p, preco_final), 2),
+             "timestamp_compra": p["timestamp"],
+             **({"padrao": p["padrao"]} if "padrao" in p else {})}
+            for p in cart.posicoes]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Modos FOMO e Flat (grid de compras em quedas)
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _rodar_backtest(
@@ -217,15 +457,12 @@ def _rodar_backtest(
     percentual_perda_aceita: float,
     modo: str = "fomo",
     taxa_operacao_pct: float = TAXA_OPERACAO_PADRAO_PCT,
+    slippage_pct: float = 0.0,
 ) -> dict:
-    caixa = capital_inicial
-    taxa = taxa_operacao_pct / 100
-    custos = 0.0
+    cart = _Carteira(capital_inicial, taxa_operacao_pct, slippage_pct)
     pico: float | None = None
-    posicoes: list[dict] = []
-    trades: list[dict] = []
-    serie_patrimonio: list[dict] = []
-    proximo_id = 1
+    pendente: dict | None = None     # sinal do candle anterior, executa na abertura
+    serie: list[dict] = []
 
     fator_lucro = 1 + percentual_lucro_venda / 100
     fator_queda = 1 - percentual_queda_compra / 100
@@ -235,185 +472,41 @@ def _rodar_backtest(
     fator_perda = 1 - percentual_perda_aceita / 100
 
     for candle in candles:
+        # Chave naive (sem fuso) para casar com `agrupado` (ver
+        # correlacao.agregar_posts_por_hora); o que sai usa UTC explícito.
+        grupo = agrupado.get(candle.timestamp.isoformat())
+
+        # 1) Executa na abertura a compra sinalizada no fechamento anterior.
+        if pendente is not None:
+            pos = cart.abrir(candle, candle.abertura, valor_por_compra,
+                             sentiment_score=pendente["sentiment_score"])
+            if pos:
+                # Exige uma nova perna de queda a partir daqui antes da
+                # próxima compra — sem isso, compraria em toda hora abaixo
+                # do pico antigo.
+                pico = pos["preco_entrada"]
+            pendente = None
+
+        # 2) Vende o que bateu a meta ou o stop dentro do candle.
+        for pos in list(cart.posicoes):
+            entrada = pos["preco_entrada"]
+            saida = _saida(candle, COMPRADO, entrada * fator_lucro, entrada * fator_perda)
+            if saida:
+                cart.fechar(pos, candle, saida[1], saida[0])
+
+        # 3) No fechamento: atualiza o pico e decide se compra no próximo.
         preco = candle.fechamento
-        # Chave naive (sem fuso) para casar com `agrupado`, que usa a mesma
-        # convenção interna (ver correlacao.agregar_posts_por_hora). Tudo
-        # que sai para o frontend usa `hora_out`, com UTC explícito — sem
-        # isso o navegador interpreta a hora como fuso local (ver
-        # utils/tempo.py::para_iso_utc).
-        hora_iso = candle.timestamp.isoformat()
-        hora_out = para_iso_utc(candle.timestamp)
-
-        # 1) Vende posições que bateram a meta de lucro OU o limite de
-        #    perda aceita (stop-loss) — o que vier primeiro.
-        ainda_abertas = []
-        for pos in posicoes:
-            alvo_lucro = pos["preco_entrada"] * fator_lucro
-            alvo_perda = pos["preco_entrada"] * fator_perda
-            motivo = None
-            if preco >= alvo_lucro:
-                motivo = "lucro"
-            elif preco <= alvo_perda:
-                motivo = "perda"
-
-            if motivo:
-                bruto = pos["qtd"] * preco
-                custo = bruto * taxa
-                custos += custo
-                valor_venda = bruto - custo
-                lucro = valor_venda - pos["valor_investido"]
-                caixa += valor_venda
-                trades.append(
-                    {
-                        "tipo": "venda",
-                        "motivo": motivo,
-                        "posicao_id": pos["id"],
-                        "timestamp": hora_out,
-                        "preco": round(preco, 2),
-                        "qtd": pos["qtd"],
-                        "valor": round(valor_venda, 2),
-                        "taxa": round(custo, 4),
-                        "preco_entrada": round(pos["preco_entrada"], 2),
-                        "lucro": round(lucro, 2),
-                        "lucro_pct": round(
-                            lucro / pos["valor_investido"] * 100, 2
-                        ),
-                    }
-                )
-            else:
-                ainda_abertas.append(pos)
-        posicoes = ainda_abertas
-
-        # 2) Atualiza o pico de referência para a próxima queda.
         pico = preco if pico is None else max(pico, preco)
-
-        # 3) Compra se a queda foi suficiente + caixa disponível — no modo
-        #    FOMO, exige também sentimento positivo na hora; no modo Flat,
-        #    a queda de preço sozinha já é o sinal de compra.
-        grupo = agrupado.get(hora_iso)
         sentimento_positivo = grupo is not None and grupo.direcao == POSITIVO
-        queda_suficiente = pico is not None and preco <= pico * fator_queda
-        sinal_compra = queda_suficiente and (
-            sentimento_positivo if modo == "fomo" else True
-        )
+        queda_suficiente = preco <= pico * fator_queda
+        if queda_suficiente and (sentimento_positivo if modo == "fomo" else True) \
+                and cart.caixa >= valor_por_compra:
+            pendente = {"sentiment_score": grupo.sentiment_score if grupo else None}
 
-        if sinal_compra and caixa >= valor_por_compra:
-            # A taxa sai do valor da compra: entra menos moeda na posição.
-            custo = valor_por_compra * taxa
-            custos += custo
-            qtd = (valor_por_compra - custo) / preco
-            caixa -= valor_por_compra
-            posicoes.append(
-                {
-                    "id": proximo_id,
-                    "preco_entrada": preco,
-                    "qtd": qtd,
-                    "valor_investido": valor_por_compra,
-                    "timestamp": hora_out,
-                }
-            )
-            trades.append(
-                {
-                    "tipo": "compra",
-                    "posicao_id": proximo_id,
-                    "timestamp": hora_out,
-                    "preco": round(preco, 2),
-                    "qtd": qtd,
-                    "valor": round(valor_por_compra, 2),
-                    "taxa": round(custo, 4),
-                    "sentiment_score": grupo.sentiment_score if grupo else None,
-                }
-            )
-            proximo_id += 1
-            # Exige uma nova perna de queda a partir daqui antes da próxima
-            # compra — sem isso, compraria em toda hora abaixo do pico antigo.
-            pico = preco
+        serie.append(cart.ponto(candle, sentiment_score=grupo.sentiment_score if grupo else None))
 
-        valor_posicoes = sum(p["qtd"] * preco for p in posicoes)
-        serie_patrimonio.append(
-            {
-                "timestamp": hora_out,
-                "preco": round(preco, 2),
-                "caixa": round(caixa, 2),
-                "valor_posicoes": round(valor_posicoes, 2),
-                "patrimonio": round(caixa + valor_posicoes, 2),
-                "posicoes_abertas": len(posicoes),
-                "sentiment_score": grupo.sentiment_score if grupo else None,
-            }
-        )
-
-    preco_final = candles[-1].fechamento
-    preco_inicial = candles[0].fechamento
-
-    valor_investido_aberto = sum(p["valor_investido"] for p in posicoes)
-    valor_atual_aberto = sum(p["qtd"] * preco_final for p in posicoes)
-    lucro_nao_realizado = valor_atual_aberto - valor_investido_aberto
-
-    vendas = [t for t in trades if t["tipo"] == "venda"]
-    compras = [t for t in trades if t["tipo"] == "compra"]
-    lucro_realizado = sum(t["lucro"] for t in vendas)
-
-    # Taxa de acerto = fração das vendas que fecharam com lucro. Só faz
-    # sentido com pelo menos uma venda — posições ainda abertas não contam
-    # (o resultado delas não está decidido).
-    vendas_lucrativas = sum(1 for t in vendas if t["lucro"] > 0)
-    taxa_acerto_pct = (
-        round(vendas_lucrativas / len(vendas) * 100, 1) if vendas else None
-    )
-    vendas_por_stop_loss = sum(1 for t in vendas if t["motivo"] == "perda")
-
-    patrimonio_final = caixa + valor_atual_aberto
-    lucro_total = patrimonio_final - capital_inicial
-    lucro_total_pct = (
-        round(lucro_total / capital_inicial * 100, 2) if capital_inicial else 0.0
-    )
-
-    qtd_bh = capital_inicial * (1 - taxa) / preco_inicial if preco_inicial else 0.0
-    patrimonio_bh = qtd_bh * preco_final
-    lucro_bh_pct = (
-        round((patrimonio_bh - capital_inicial) / capital_inicial * 100, 2)
-        if capital_inicial
-        else 0.0
-    )
-
-    resumo = {
-        "total_horas_simuladas": len(candles),
-        "total_horas_com_posts": len(agrupado),
-        "total_compras": len(compras),
-        "total_vendas": len(vendas),
-        "vendas_lucrativas": vendas_lucrativas,
-        "vendas_por_stop_loss": vendas_por_stop_loss,
-        "taxa_acerto_pct": taxa_acerto_pct,
-        "posicoes_abertas_final": len(posicoes),
-        "caixa_final": round(caixa, 2),
-        "valor_posicoes_abertas": round(valor_atual_aberto, 2),
-        "patrimonio_final": round(patrimonio_final, 2),
-        "lucro_realizado": round(lucro_realizado, 2),
-        "lucro_nao_realizado": round(lucro_nao_realizado, 2),
-        "lucro_total": round(lucro_total, 2),
-        "lucro_total_pct": lucro_total_pct,
-        "custos_totais": round(custos, 2),
-        "buy_and_hold": {
-            "preco_inicial": round(preco_inicial, 2),
-            "preco_final": round(preco_final, 2),
-            "patrimonio_final": round(patrimonio_bh, 2),
-            "lucro_pct": lucro_bh_pct,
-        },
-        "superou_buy_and_hold": lucro_total_pct > lucro_bh_pct,
-    }
-
-    posicoes_abertas = [
-        {
-            "id": p["id"],
-            "preco_entrada": round(p["preco_entrada"], 2),
-            "qtd": p["qtd"],
-            "valor_investido": round(p["valor_investido"], 2),
-            "valor_atual": round(p["qtd"] * preco_final, 2),
-            "timestamp_compra": p["timestamp"],
-        }
-        for p in posicoes
-    ]
-
+    resumo = _resumo(cart, candles, serie, capital_inicial, 1,
+                     {"total_horas_com_posts": len(agrupado)})
     return {
         "moeda": moeda,
         "perfis": perfis,
@@ -427,11 +520,121 @@ def _rodar_backtest(
             "percentual_queda_compra": percentual_queda_compra,
             "percentual_perda_aceita": percentual_perda_aceita,
             "taxa_operacao_pct": taxa_operacao_pct,
+            "slippage_pct": slippage_pct,
         },
         "vazio": False,
         "mensagem": None,
         "resumo": resumo,
-        "trades": trades,
-        "serie_patrimonio": serie_patrimonio,
-        "posicoes_abertas": posicoes_abertas,
+        "trades": cart.trades,
+        "serie_patrimonio": serie,
+        "posicoes_abertas": _posicoes_abertas(cart, candles[-1].fechamento),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Modo Padrões gráficos
+# ═══════════════════════════════════════════════════════════════════════════
+
+HORAS_POR_CANDLE = {"4h": 4, "12h": 12, "1d": 24}
+# Candles lidos antes do período: um padrão que rompe no primeiro dia
+# começou a se formar semanas antes.
+CANDLES_ANTES = 300
+MAX_DIAS_PADROES = 730
+
+
+def simular_padroes(
+    moeda: str,
+    tipo: str,
+    intervalo: str,
+    inicio: datetime,
+    fim: datetime,
+    capital_inicial: float,
+    valor_por_operacao: float,
+    taxa_operacao_pct: float = TAXA_OPERACAO_PADRAO_PCT,
+    slippage_pct: float = 0.0,
+    candles: list | None = None,
+) -> dict:
+    """Opera cada rompimento do padrão ``tipo`` no período.
+
+    Entrada na abertura do candle seguinte ao rompimento; saída no alvo
+    (movimento medido), no stop (invalidação do padrão) ou no fim do
+    horizonte do padrão, pelo fechamento. ``candles`` permite injetar a
+    série nos testes (deve incluir o histórico antes de ``inicio``).
+    """
+    moeda_u = moeda.upper()
+    nome, s, _, _ = svc_padroes.TIPOS[tipo]
+    horas = HORAS_POR_CANDLE[intervalo]
+    parametros = {
+        "modo": "padroes", "padrao": tipo, "padrao_nome": nome,
+        "direcao": "alta" if s == COMPRADO else "baixa", "intervalo": intervalo,
+        "capital_inicial": capital_inicial, "valor_por_compra": valor_por_operacao,
+        "taxa_operacao_pct": taxa_operacao_pct, "slippage_pct": slippage_pct,
+    }
+
+    if candles is None:
+        try:
+            candles = svc_mercado.buscar_klines_intervalo(
+                svc_mercado.simbolo_para(moeda_u),
+                inicio - timedelta(hours=horas * CANDLES_ANTES), fim,
+                intervalo=intervalo, max_requisicoes=8,
+            )
+        except svc_mercado.ErroBinance as e:
+            logger.warning("Sem candles para simular padrões de %s: %s", moeda_u, e)
+            candles = []
+
+    i0 = next((i for i, c in enumerate(candles) if c.timestamp >= inicio), None)
+    if not candles or i0 is None:
+        return _resultado_vazio(moeda_u, [], inicio, fim, parametros,
+                                "Não foi possível obter preços da Binance para esse período.")
+
+    # Agenda a entrada de cada rompimento ocorrido dentro do período.
+    agenda: dict[int, list[dict]] = {}
+    for p in svc_padroes.detectar(candles, tipos={tipo}):
+        if p["status"] != "confirmado":
+            continue
+        i_entrada = p["i_rompimento"] + 1
+        if p["i_rompimento"] >= i0 and i_entrada < len(candles):
+            agenda.setdefault(i_entrada, []).append(p)
+    if not agenda:
+        return _resultado_vazio(
+            moeda_u, [], inicio, fim, parametros,
+            f"Nenhum rompimento de {nome.lower()} em {intervalo} no período. "
+            "Tente um período maior ou outro padrão.")
+
+    cart = _Carteira(capital_inicial, taxa_operacao_pct, slippage_pct)
+    serie: list[dict] = []
+    nao_operados = 0
+    for j in range(i0, len(candles)):
+        candle = candles[j]
+        for p in agenda.get(j, []):
+            pos = cart.abrir(candle, candle.abertura, valor_por_operacao, s,
+                             padrao=nome, alvo=p["alvo"], stop=p["invalidacao"],
+                             prazo=p["i_rompimento"] + p["horizonte"])
+            nao_operados += pos is None
+        for pos in list(cart.posicoes):
+            saida = _saida(candle, s, pos["alvo"], pos["stop"])
+            if saida:
+                cart.fechar(pos, candle, saida[1], saida[0])
+            elif j >= pos["prazo"]:
+                cart.fechar(pos, candle, candle.fechamento, "prazo")
+        serie.append(cart.ponto(candle))
+
+    no_periodo = candles[i0:]
+    resumo = _resumo(cart, no_periodo, serie, capital_inicial, horas,
+                     {"rompimentos": sum(len(v) for v in agenda.values()),
+                      "sem_caixa": nao_operados})
+    return {
+        "moeda": moeda_u,
+        "perfis": [],
+        "data_inicio": para_iso_utc(no_periodo[0].timestamp),
+        "data_fim": para_iso_utc(no_periodo[-1].timestamp),
+        "parametros": parametros,
+        "vazio": False,
+        "mensagem": None,
+        "resumo": resumo,
+        "trades": cart.trades,
+        "serie_patrimonio": serie,
+        "posicoes_abertas": _posicoes_abertas(cart, no_periodo[-1].fechamento),
+    }
+
+

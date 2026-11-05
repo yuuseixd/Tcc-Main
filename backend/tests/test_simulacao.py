@@ -327,3 +327,177 @@ class TestTaxa:
         r = rodar(db, monkeypatch, precos, {0: "negativo"}, taxa_operacao_pct=1.0)
         # 1000 com 1% de taxa = 990 investidos; a 110 vale 1089 -> +8,9%.
         assert r["resumo"]["buy_and_hold"]["lucro_pct"] == pytest.approx(8.9)
+
+
+def c(i: int, abertura, maxima, minima, fechamento) -> Candle:
+    return Candle(timestamp=BASE + timedelta(hours=i), abertura=abertura,
+                  fechamento=fechamento, maxima=maxima, minima=minima)
+
+
+def grid(candles, **kw):
+    """Roda o modo Flat direto no motor, com candles OHLC completos."""
+    args = dict(capital_inicial=1000.0, valor_por_compra=100.0,
+                percentual_lucro_venda=5.0, percentual_queda_compra=3.0,
+                percentual_perda_aceita=4.0, modo="flat", taxa_operacao_pct=0.0)
+    args.update(kw)
+    return svc_simulacao._rodar_backtest("BTC", [], candles, {}, **args)
+
+
+class TestExecucao:
+    """Sinal no fechamento, ordem na abertura seguinte; meta e stop no pavio."""
+
+    def test_compra_na_abertura_do_candle_seguinte(self):
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                  c(2, 96, 97, 95.5, 96)])
+        compra = [t for t in r["trades"] if t["tipo"] == "compra"][0]
+        assert compra["preco"] == 96.0            # abertura do candle 2, não 95
+        assert compra["timestamp"].startswith("2026-03-03T02")
+
+    def test_sinal_no_ultimo_candle_nao_executa(self):
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95)])
+        assert r["resumo"]["total_compras"] == 0
+
+    def test_pavio_no_stop_vende_no_stop(self):
+        # Compra a 95; o pavio vai a 90 (stop 91,2) mas o candle fecha a 94.
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                  c(2, 95, 96, 90, 94)])
+        venda = [t for t in r["trades"] if t["tipo"] == "venda"][0]
+        assert venda["motivo"] == "perda"
+        assert venda["preco"] == pytest.approx(91.2)
+
+    def test_pavio_na_meta_vende_na_meta(self):
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                  c(2, 95, 96, 95, 95.5), c(3, 96, 101, 95.5, 97)])
+        venda = [t for t in r["trades"] if t["tipo"] == "venda"][0]
+        assert venda["motivo"] == "lucro"
+        assert venda["preco"] == pytest.approx(99.75)
+
+    def test_gap_abaixo_do_stop_vende_na_abertura(self):
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                  c(2, 95, 95.5, 94, 95), c(3, 88, 89, 87, 88)])
+        venda = [t for t in r["trades"] if t["tipo"] == "venda"][0]
+        assert venda["preco"] == 88.0 and venda["motivo"] == "perda"
+
+    def test_meta_e_stop_no_mesmo_candle_conta_stop(self):
+        r = grid([c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                  c(2, 95, 101, 90, 96)])
+        assert [t["motivo"] for t in r["trades"] if t["tipo"] == "venda"] == ["perda"]
+
+    def test_slippage_piora_compra_e_venda(self):
+        velas = [c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                 c(2, 95, 96, 95, 95.5), c(3, 96, 101, 95.5, 97)]
+        r = grid(velas, slippage_pct=1.0)
+        compra, venda = r["trades"]
+        assert compra["preco"] == pytest.approx(95.95)       # 95 + 1%
+        # Meta calculada sobre a entrada executada; venda sai 1% abaixo.
+        assert venda["preco"] == pytest.approx(95.95 * 1.05 * 0.99, abs=0.01)
+
+
+class TestMetricas:
+    def test_queda_maxima(self):
+        assert svc_simulacao._queda_maxima_pct([100, 120, 90, 130, 117]) == 25.0
+        assert svc_simulacao._queda_maxima_pct([100, 101, 102]) == 0.0
+
+    def test_fator_de_lucro_e_medias(self):
+        # Uma operação na meta e outra no stop.
+        velas = [c(0, 100, 100, 100, 100), c(1, 100, 100, 95, 95),
+                 c(2, 95, 101, 95, 100), c(3, 100, 100, 96, 96),
+                 c(4, 96, 96, 96, 96), c(5, 96, 96, 90, 91)]
+        s = grid(velas)["resumo"]
+        assert s["operacoes_fechadas"] == 2
+        ganho = 100 / 95 * 99.75 - 100
+        perda = 100 / 96 * 92.16 - 100
+        assert s["fator_lucro"] == pytest.approx(ganho / -perda, abs=0.01)
+        assert s["maior_ganho"] == pytest.approx(ganho, abs=0.01)
+        assert s["maior_perda"] == pytest.approx(perda, abs=0.01)
+        assert s["duracao_media_h"] == 0.5        # uma saiu na hora, outra 1 h depois
+        assert 0 < s["exposicao_pct"] < 100
+
+    def test_sem_operacao_metricas_vazias(self):
+        s = grid([c(0, 100, 100, 100, 100), c(1, 100, 101, 99, 100)])["resumo"]
+        assert s["fator_lucro"] is None and s["media_por_operacao"] is None
+        assert s["queda_maxima_pct"] == 0.0
+
+
+def padrao(tipo, i_rompimento, alvo, invalidacao, horizonte=10):
+    return {"tipo": tipo, "status": "confirmado", "i_rompimento": i_rompimento,
+            "alvo": alvo, "invalidacao": invalidacao, "horizonte": horizonte}
+
+
+def simular_padroes(monkeypatch, velas, padroes, tipo="fundo_duplo", inicio_i=0, **kw):
+    monkeypatch.setattr(svc_simulacao.svc_padroes, "detectar", lambda *a, **k: padroes)
+    args = dict(capital_inicial=1000.0, valor_por_operacao=100.0, taxa_operacao_pct=0.0)
+    args.update(kw)
+    return svc_simulacao.simular_padroes(
+        "BTC", tipo, "4h", BASE + timedelta(hours=inicio_i), BASE + timedelta(hours=99),
+        candles=velas, **args)
+
+
+class TestModoPadroes:
+    VELAS = [c(0, 100, 100, 100, 100), c(1, 100, 102, 99, 101),
+             c(2, 102, 104, 101, 103), c(3, 103, 111, 102, 110), c(4, 110, 111, 108, 109)]
+
+    def test_entra_apos_rompimento_e_sai_no_alvo(self, monkeypatch):
+        r = simular_padroes(monkeypatch, self.VELAS, [padrao("fundo_duplo", 1, 108, 95)])
+        entrada, saida = r["trades"]
+        assert entrada["preco"] == 102.0 and entrada["lado"] == "comprado"
+        assert saida["motivo"] == "lucro" and saida["preco"] == 108.0
+        assert saida["padrao"] == "Fundo duplo"
+        assert r["parametros"]["padrao"] == "fundo_duplo"
+
+    def test_stop_na_invalidacao(self, monkeypatch):
+        velas = self.VELAS[:2] + [c(2, 101, 101, 94, 96), c(3, 96, 97, 95, 96)]
+        r = simular_padroes(monkeypatch, velas, [padrao("fundo_duplo", 1, 120, 95)])
+        assert r["trades"][1]["motivo"] == "perda" and r["trades"][1]["preco"] == 95.0
+
+    def test_sai_por_prazo_no_fechamento(self, monkeypatch):
+        r = simular_padroes(monkeypatch, self.VELAS,
+                            [padrao("fundo_duplo", 1, 200, 50, horizonte=2)])
+        saida = r["trades"][1]
+        assert saida["motivo"] == "prazo" and saida["preco"] == 110.0  # candle 3
+        assert r["resumo"]["saidas_por_prazo"] == 1
+
+    def test_padrao_de_baixa_vende_a_descoberto(self, monkeypatch):
+        velas = [c(0, 100, 100, 100, 100), c(1, 100, 100, 97, 98),
+                 c(2, 98, 98, 89, 90), c(3, 90, 91, 89, 90)]
+        r = simular_padroes(monkeypatch, velas, [padrao("topo_duplo", 1, 90, 105)],
+                            tipo="topo_duplo")
+        entrada, saida = r["trades"]
+        assert entrada["lado"] == "vendido" and entrada["preco"] == 98.0
+        assert saida["motivo"] == "lucro" and saida["preco"] == 90.0
+        # Ganha o quanto o preço caiu: 100/98 x 8.
+        assert saida["lucro"] == pytest.approx(100 / 98 * 8, abs=0.01)
+
+    def test_rompimento_antes_do_periodo_fica_de_fora(self, monkeypatch):
+        r = simular_padroes(monkeypatch, self.VELAS, [padrao("fundo_duplo", 1, 108, 95)],
+                            inicio_i=2)
+        assert r["vazio"] is True and "Nenhum rompimento" in r["mensagem"]
+
+    def test_sem_caixa_nao_opera(self, monkeypatch):
+        ps = [padrao("fundo_duplo", 1, 200, 50), padrao("fundo_duplo", 1, 200, 50)]
+        r = simular_padroes(monkeypatch, self.VELAS, ps, capital_inicial=150.0)
+        assert r["resumo"]["total_entradas"] == 1 and r["resumo"]["sem_caixa"] == 1
+
+    def test_detector_real_roda_sem_erro(self):
+        # Série com dois fundos e rompimento, sem mock: garante o encaixe.
+        import math
+        velas = []
+        for i in range(400):
+            p = 100 + 10 * math.sin(i / 15) + i * 0.02
+            velas.append(c(i, p, p * 1.01, p * 0.99, p))
+        r = svc_simulacao.simular_padroes(
+            "BTC", "fundo_duplo", "4h", BASE + timedelta(hours=100),
+            BASE + timedelta(hours=400), 1000.0, 100.0, candles=velas)
+        assert "resumo" in r
+
+
+class TestRequisicaoPadroes:
+    def test_exige_padrao_valido(self):
+        from pydantic import ValidationError
+        from schemas import SimulacaoInvestimentoRequest as Req
+        with pytest.raises(ValidationError):
+            Req(modo="padroes", padrao="inexistente", data_inicio="2026-01-01",
+                data_fim="2026-02-01")
+        ok = Req(modo="padroes", padrao="fundo_duplo", intervalo="12h",
+                 data_inicio="2026-01-01", data_fim="2026-02-01")
+        assert ok.slippage_pct == 0.05
